@@ -1,0 +1,101 @@
+# ============================================================
+# Quant Finance Research Platform — Global Settings
+# ============================================================
+
+project:
+  name: "quant-research-platform"
+  version: "0.1.0"
+  phase: 1  # 1=Quant, 2=Fundamental, 3=Ensemble
+
+# ── Universe ─────────────────────────────────────────────────
+universe:
+  min_market_cap_b: 2.0        # USD billions
+  min_avg_daily_volume_m: 5.0  # USD millions
+  min_xbrl_quarters: 8
+  exchanges: ["NYSE", "NASDAQ"]
+  currency: "USD"
+  ipo_cutoff: "2017-01-01"     # no IPOs before this date in training data
+  sectors:
+    - "Information Technology"
+    - "Semiconductors"
+    - "Software"
+    - "Technology Hardware"
+
+# ── Data Timeline ─────────────────────────────────────────────
+timeline:
+  train_start: "2015-01-01"
+  train_end:   "2022-12-31"
+  test_start:  "2023-01-01"
+  test_end:    "2024-12-31"
+  live_start:  "2025-01-01"
+
+# ── Benchmarks ───────────────────────────────────────────────
+benchmarks:
+  phase1: "XLK"
+  phase3: "SPY"
+  equal_weight: true   # build equal-weight screen universe for Phase 3
+
+# ── Data Sources ─────────────────────────────────────────────
+data:
+  price_source: "yfinance"        # free; swap for Polygon later
+  macro_source: "fred"            # FRED API
+  xbrl_source: "sec_edgar"        # SEC EDGAR full-text search + XBRL API
+  xbrl_cross_validate: "simfin"   # Simfin free tier cross-check
+  transcript_source: "seeking_alpha"  # placeholder; update per access
+
+  paths:
+    raw_prices:     "data/raw/price_volume"
+    raw_xbrl:       "data/raw/edgar_xbrl"
+    raw_transcripts: "data/raw/transcripts"
+    raw_macro:      "data/raw/fred_macro"
+    processed:      "data/processed"
+    universe:       "data/universe"
+    db:             "data/quant_research.db"
+
+# ── FRED Macro Factors ────────────────────────────────────────
+fred:
+  series:
+    - id: "DFF"        # Fed Funds Rate
+      name: "fed_funds_rate"
+    - id: "T10Y2Y"     # 10Y-2Y Yield Spread
+      name: "yield_spread_10y2y"
+    - id: "VIXCLS"     # VIX
+      name: "vix"
+    - id: "DTWEXBGS"   # USD Trade-Weighted Index
+      name: "usd_index"
+    - id: "BAMLH0A0HYM2" # HY Credit Spread
+      name: "hy_credit_spread"
+    - id: "INDPRO"     # Industrial Production Index
+      name: "industrial_production"
+
+# ── Quant Factors ─────────────────────────────────────────────
+quant_factors:
+  momentum:
+    lookbacks_days: [21, 63, 126, 252]   # 1M, 3M, 6M, 12M
+    skip_days: 5                          # skip most-recent week (reversion)
+  volume:
+    rolling_window: 20
+  volatility:
+    window: 21
+  rebalance_freq: "monthly"             # monthly rebalance
+  long_only: true
+  top_n: 20                             # hold top-N stocks by composite score
+
+# ── ML Combiner (Phase 3) ─────────────────────────────────────
+ml:
+  model: "xgboost"
+  cv_folds: 5
+  train_window_years: 3
+  retrain_freq: "quarterly"
+
+# ── Backtest ─────────────────────────────────────────────────
+backtest:
+  initial_capital: 100000
+  commission_pct: 0.001      # 10bps per side
+  slippage_pct: 0.0005       # 5bps
+  freq: "1D"
+
+# ── Dashboard ─────────────────────────────────────────────────
+dashboard:
+  port: 8501
+  theme: "dark"

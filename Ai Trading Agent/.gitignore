@@ -1,0 +1,52 @@
+# ── Secrets ──────────────────────────────────────────────────
+.env
+
+# ── Python ───────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ── Virtual Environments ─────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Data (raw & large files — keep processed outputs) ────────
+data/raw/
+data/quant_research.db
+*.parquet
+*.csv
+*.feather
+*.h5
+
+# ── Notebooks checkpoints ────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Logs ─────────────────────────────────────────────────────
+logs/*.log
+
+# ── OS ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── Models (large binary weights) ────────────────────────────
+*.pt
+*.pkl
+*.bin
+models/
+
+# ── Backtest artifacts (keep reports, exclude raw result dumps)
+backtests/results/*.pkl
