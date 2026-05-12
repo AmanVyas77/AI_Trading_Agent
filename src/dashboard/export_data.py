@@ -328,18 +328,20 @@ def export_performance(engine) -> None:
     fund_train  = RESULTS_DIR / "fundamental_sprint2_train_equity.csv"
     fund_test   = RESULTS_DIR / "fundamental_sprint2_test_equity.csv"
 
+    ens_train   = RESULTS_DIR / "ensemble_sprint3_train_equity.csv"
+    ens_test    = RESULTS_DIR / "ensemble_sprint3_test_equity.csv"
+
     _add_series(quant_src,  "strategy",  "quant")
     _add_series(quant_src,  "benchmark", "spy")      # quant benchmarks vs SPY
 
     # For fundamental, stitch train + test into one continuous series
-    if fund_train.exists() and fund_test.exists():
-        train_df = pd.read_csv(fund_train, index_col=0, parse_dates=True)
-        test_df  = pd.read_csv(fund_test,  index_col=0, parse_dates=True)
-        for col, out_key in [("strategy", "fundamental"), ("benchmark", "xlk")]:
+    def _stitch_train_test(train_path, test_path, col, out_key):
+        if train_path.exists() and test_path.exists():
+            train_df = pd.read_csv(train_path, index_col=0, parse_dates=True)
+            test_df  = pd.read_csv(test_path,  index_col=0, parse_dates=True)
             if col in train_df.columns and col in test_df.columns:
                 s_train = train_df[col].dropna()
                 s_test  = test_df[col].dropna()
-                # Rescale test to continue from where train left off
                 scale = s_train.iloc[-1] / s_test.iloc[0] if s_test.iloc[0] != 0 else 1.0
                 s_combined = pd.concat([s_train, s_test * scale])
                 cum = s_combined / s_combined.iloc[0] - 1
@@ -348,10 +350,18 @@ def export_performance(engine) -> None:
                     if date_str not in records_map:
                         records_map[date_str] = {"date": date_str}
                     records_map[date_str][out_key] = round(float(val), 6)
-        logger.info("  Loaded fundamental + XLK from train+test equity CSVs")
-    else:
+                logger.info(f"  Loaded {out_key} from {train_path.name}+{test_path.name}")
+                return True
+        return False
+
+    if not _stitch_train_test(fund_train, fund_test, "strategy", "fundamental"):
         _add_series(fund_train, "strategy",  "fundamental")
+    if not _stitch_train_test(fund_train, fund_test, "benchmark", "xlk"):
         _add_series(fund_train, "benchmark", "xlk")
+
+    # Ensemble: stitch train + test
+    if not _stitch_train_test(ens_train, ens_test, "strategy", "ensemble"):
+        _add_series(ens_train, "strategy", "ensemble")
 
     # ── Fallback: equal-weight proxy if no CSVs found ─────────────────
     if not records_map and _table_exists(engine, "prices"):
@@ -393,6 +403,37 @@ def export_performance(engine) -> None:
     _write_json(output, "performance.json")
 
 
+# ── Ensemble export ───────────────────────────────────────────────────────────
+
+def export_ensemble() -> None:
+    """
+    Export ensemble-specific data for the dashboard:
+      - ensemble_scores.json    (monthly scores per ticker)
+      - regime_attribution.json (copy to dashboard data dir)
+    """
+    # Ensemble scores
+    scores_path = ROOT / "data" / "processed" / "ensemble_scores.parquet"
+    if scores_path.exists():
+        df = pd.read_parquet(scores_path)
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]):
+                df[col] = df[col].dt.strftime("%Y-%m-%d")
+        records = df.where(pd.notna(df), None).to_dict(orient="records")
+        _write_json(records, "ensemble_scores.json")
+    else:
+        logger.warning("ensemble_scores.parquet not found — skipping")
+
+    # Regime attribution — copy from processed to dashboard dir
+    attr_src = ROOT / "data" / "processed" / "regime_attribution.json"
+    if attr_src.exists():
+        import shutil
+        attr_dst = EXPORT_DIR / "regime_attribution.json"
+        shutil.copy2(attr_src, attr_dst)
+        logger.info(f"  → {attr_dst}  ({attr_dst.stat().st_size / 1024:.0f} KB)")
+    else:
+        logger.warning("regime_attribution.json not found — skipping")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_export() -> None:
@@ -410,6 +451,7 @@ def run_export() -> None:
     export_fundamental_signals(engine)
     export_universe()
     export_performance(engine)
+    export_ensemble()
 
     logger.info("Dashboard data export complete ✓")
 
