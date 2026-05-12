@@ -292,86 +292,101 @@ def export_universe() -> None:
 def export_performance(engine) -> None:
     """
     Export cumulative returns for strategies and benchmarks.
-    Produces daily cumulative return series for: quant, fundamental, XLK, SPY.
+    Reads from the real VectorBT equity curve CSVs saved by each strategy.
+    Falls back to equal-weight proxy if CSVs are not found.
     """
-    records = []
+    RESULTS_DIR = ROOT / "backtests" / "results"
+    records_map: dict[str, dict] = {}  # date_str -> {key: value}
 
-    if _table_exists(engine, "prices"):
-        # Load prices for XLK and SPY
-        sql = """
-            SELECT ticker, date, adj_close
-            FROM prices
-            WHERE ticker IN ('XLK', 'SPY')
-              AND date >= :start AND date <= :end
-            ORDER BY date
-        """
-        with engine.connect() as conn:
-            bench_df = pd.read_sql_query(
-                text(sql), conn,
-                params={"start": TIMELINE["train_start"], "end": TIMELINE["test_end"]},
-            )
+    def _add_series(csv_path: Path, col: str, out_key: str) -> None:
+        """Read a CSV equity curve and add it to records_map as cumulative return."""
+        if not csv_path.exists():
+            logger.warning(f"  Equity CSV not found: {csv_path.name}")
+            return
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        if col not in df.columns:
+            logger.warning(f"  Column '{col}' not in {csv_path.name}")
+            return
+        s = df[col].dropna()
+        if s.empty:
+            return
+        # Normalise to cumulative return (start = 0%)
+        cum = s / s.iloc[0] - 1
+        for dt, val in cum.items():
+            date_str = pd.Timestamp(dt).strftime("%Y-%m-%d")
+            if date_str not in records_map:
+                records_map[date_str] = {"date": date_str}
+            records_map[date_str][out_key] = round(float(val), 6)
+        logger.info(f"  Loaded {out_key} from {csv_path.name} ({len(cum)} rows)")
 
-        # Load all universe prices to compute equal-weight strategy proxies
+    # ── Real backtest equity curves ───────────────────────────────────
+    # Quant: combine train + test into one series
+    quant_train = RESULTS_DIR / "quant_sprint1_train_equity.csv"
+    quant_full  = RESULTS_DIR / "quant_sprint1_full_equity.csv"
+    quant_src   = quant_full if quant_full.exists() else quant_train
+
+    fund_train  = RESULTS_DIR / "fundamental_sprint2_train_equity.csv"
+    fund_test   = RESULTS_DIR / "fundamental_sprint2_test_equity.csv"
+
+    _add_series(quant_src,  "strategy",  "quant")
+    _add_series(quant_src,  "benchmark", "spy")      # quant benchmarks vs SPY
+
+    # For fundamental, stitch train + test into one continuous series
+    if fund_train.exists() and fund_test.exists():
+        train_df = pd.read_csv(fund_train, index_col=0, parse_dates=True)
+        test_df  = pd.read_csv(fund_test,  index_col=0, parse_dates=True)
+        for col, out_key in [("strategy", "fundamental"), ("benchmark", "xlk")]:
+            if col in train_df.columns and col in test_df.columns:
+                s_train = train_df[col].dropna()
+                s_test  = test_df[col].dropna()
+                # Rescale test to continue from where train left off
+                scale = s_train.iloc[-1] / s_test.iloc[0] if s_test.iloc[0] != 0 else 1.0
+                s_combined = pd.concat([s_train, s_test * scale])
+                cum = s_combined / s_combined.iloc[0] - 1
+                for dt, val in cum.items():
+                    date_str = pd.Timestamp(dt).strftime("%Y-%m-%d")
+                    if date_str not in records_map:
+                        records_map[date_str] = {"date": date_str}
+                    records_map[date_str][out_key] = round(float(val), 6)
+        logger.info("  Loaded fundamental + XLK from train+test equity CSVs")
+    else:
+        _add_series(fund_train, "strategy",  "fundamental")
+        _add_series(fund_train, "benchmark", "xlk")
+
+    # ── Fallback: equal-weight proxy if no CSVs found ─────────────────
+    if not records_map and _table_exists(engine, "prices"):
+        logger.warning("No equity CSVs found — falling back to equal-weight proxy")
         sql_all = """
-            SELECT ticker, date, adj_close
-            FROM prices
-            WHERE date >= :start AND date <= :end
-            ORDER BY date
+            SELECT ticker, date, adj_close FROM prices
+            WHERE date >= :start AND date <= :end ORDER BY date
         """
         with engine.connect() as conn:
             all_prices = pd.read_sql_query(
                 text(sql_all), conn,
                 params={"start": TIMELINE["train_start"], "end": TIMELINE["test_end"]},
             )
-
         if not all_prices.empty:
             all_prices["date"] = pd.to_datetime(all_prices["date"])
             pivot = all_prices.pivot(index="date", columns="ticker", values="adj_close")
-
-            # Equal-weight return proxy for "quant" and "fundamental"
-            daily_ret = pivot.pct_change()
-            ew_ret = daily_ret.mean(axis=1)
+            ew_ret = pivot.pct_change().mean(axis=1)
             cum_ew = (1 + ew_ret).cumprod() - 1
+            for dt, val in cum_ew.items():
+                date_str = dt.strftime("%Y-%m-%d")
+                records_map[date_str] = {
+                    "date": date_str,
+                    "quant": round(float(val), 6),
+                    "fundamental": round(float(val), 6),
+                }
 
-            # Simple proxy: quant = EW returns, fundamental = slight tilt
-            # (In production, these come from saved backtest results)
-            cum_quant = cum_ew
-            cum_fund = (1 + ew_ret * 1.05).cumprod() - 1
+    records = sorted(records_map.values(), key=lambda x: x["date"])
 
-            for dt in cum_quant.index:
-                entry = {"date": dt.strftime("%Y-%m-%d")}
-                if pd.notna(cum_quant.loc[dt]):
-                    entry["quant"] = round(float(cum_quant.loc[dt]), 6)
-                if pd.notna(cum_fund.loc[dt]):
-                    entry["fundamental"] = round(float(cum_fund.loc[dt]), 6)
-                records.append(entry)
-
-        if not bench_df.empty:
-            bench_df["date"] = pd.to_datetime(bench_df["date"])
-            bench_pivot = bench_df.pivot(index="date", columns="ticker", values="adj_close")
-            for ticker in ["XLK", "SPY"]:
-                if ticker in bench_pivot.columns:
-                    cum = bench_pivot[ticker].pct_change().add(1).cumprod().sub(1)
-                    for dt in cum.index:
-                        date_str = dt.strftime("%Y-%m-%d")
-                        match = next((r for r in records if r["date"] == date_str), None)
-                        if match is None:
-                            match = {"date": date_str}
-                            records.append(match)
-                        if pd.notna(cum.loc[dt]):
-                            match[ticker.lower()] = round(float(cum.loc[dt]), 6)
-
-    # Sort by date
-    records.sort(key=lambda x: x["date"])
-
-    # Add metadata
     output = {
         "project": CFG["project"]["name"],
         "version": CFG["project"]["version"],
         "phase": CFG["project"]["phase"],
         "exported_at": datetime.now().isoformat(),
         "train_period": f"{TIMELINE['train_start']} → {TIMELINE['train_end']}",
-        "test_period": f"{TIMELINE['test_start']} → {TIMELINE['test_end']}",
+        "test_period":  f"{TIMELINE['test_start']} → {TIMELINE['test_end']}",
         "data": records,
     }
 
