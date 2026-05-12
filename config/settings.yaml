@@ -4,7 +4,7 @@
 
 project:
   name: "quant-research-platform"
-  version: "0.2.0"
+  version: "0.1.0"
   phase: 1  # 1=Quant, 2=Fundamental, 3=Ensemble
 
 # ── Universe ─────────────────────────────────────────────────
@@ -31,182 +31,62 @@ timeline:
 
 # ── Benchmarks ───────────────────────────────────────────────
 benchmarks:
-  phase1: "XLK"     # quant strategy benchmark
-  phase2: "XLK"     # fundamental strategy benchmark
-  phase3: "SPY"     # ensemble benchmark
-  equal_weight: true
+  phase1: "XLK"
+  phase3: "SPY"
+  equal_weight: true   # build equal-weight screen universe for Phase 3
 
 # ── Data Sources ─────────────────────────────────────────────
 data:
   price_source: "yfinance"        # free; swap for Polygon later
-  macro_source: "fred"
-  xbrl_source: "sec_edgar"
-  xbrl_cross_validate: "simfin"   # Simfin free tier for cross-check + analyst estimates
-  short_interest_source: "finra"  # FINRA public short volume data (free)
-  transcript_source: "sec_8k"     # 8-K filings from EDGAR (free fallback)
+  macro_source: "fred"            # FRED API
+  xbrl_source: "sec_edgar"        # SEC EDGAR full-text search + XBRL API
+  xbrl_cross_validate: "simfin"   # Simfin free tier cross-check
+  transcript_source: "seeking_alpha"  # placeholder; update per access
 
   paths:
-    raw_prices:       "data/raw/price_volume"
-    raw_xbrl:         "data/raw/edgar_xbrl"
-    raw_transcripts:  "data/raw/transcripts"
-    raw_macro:        "data/raw/fred_macro"
-    raw_short:        "data/raw/short_interest"
-    raw_simfin:       "data/raw/simfin"
-    processed:        "data/processed"
-    universe:         "data/universe"
-    db:               "data/quant_research.db"
+    raw_prices:     "data/raw/price_volume"
+    raw_xbrl:       "data/raw/edgar_xbrl"
+    raw_transcripts: "data/raw/transcripts"
+    raw_macro:      "data/raw/fred_macro"
+    processed:      "data/processed"
+    universe:       "data/universe"
+    db:             "data/quant_research.db"
 
-# ── FRED Macro Series ─────────────────────────────────────────
+# ── FRED Macro Factors ────────────────────────────────────────
 fred:
   series:
-    - id: "DFF"           # Fed Funds Rate
+    - id: "DFF"        # Fed Funds Rate
       name: "fed_funds_rate"
-    - id: "T10Y2Y"        # 10Y-2Y Yield Spread (regime signal)
+    - id: "T10Y2Y"     # 10Y-2Y Yield Spread
       name: "yield_spread_10y2y"
-    - id: "VIXCLS"        # VIX (volatility regime)
+    - id: "VIXCLS"     # VIX
       name: "vix"
-    - id: "DTWEXBGS"      # USD Trade-Weighted Index
+    - id: "DTWEXBGS"   # USD Trade-Weighted Index
       name: "usd_index"
-    - id: "BAMLH0A0HYM2"  # HY Credit Spread
+    - id: "BAMLH0A0HYM2" # HY Credit Spread
       name: "hy_credit_spread"
-    - id: "INDPRO"        # Industrial Production Index
+    - id: "INDPRO"     # Industrial Production Index
       name: "industrial_production"
-    - id: "CPIAUCSL"      # CPI (inflation regime)
-      name: "cpi"
 
-# ── Quant Factors (Phase 1) ───────────────────────────────────
+# ── Quant Factors ─────────────────────────────────────────────
 quant_factors:
-  # Tier 1 — price/momentum signals
   momentum:
     lookbacks_days: [21, 63, 126, 252]   # 1M, 3M, 6M, 12M
-    skip_days: 5                          # skip last week (avoid short-term reversion)
+    skip_days: 5                          # skip most-recent week (reversion)
   volume:
-    rolling_window: 20                   # volume Z-score window
+    rolling_window: 20
   volatility:
-    window: 21                           # inverse realized-vol window
-  # Short interest add-on (Tier 2 quant)
-  short_interest:
-    enabled: true
-    signal: "days_to_cover"              # float ratio
-    squeeze_combo: true                  # combine high SI + positive momentum reversal
-
-  # Factor weights for composite score
-  weights:
-    momentum: 0.50
-    volume:   0.25
-    inv_vol:  0.15
-    short_interest: 0.10                 # small weight; data quality varies
-
-  # Portfolio construction
-  rebalance_freq: "monthly"
+    window: 21
+  rebalance_freq: "monthly"             # monthly rebalance
   long_only: true
-  top_n: 20                             # hold top-N by composite score
-
-  # Macro regime gate (Tier 2)
-  macro_regime:
-    vix_threshold: 25.0                  # risk-off above this
-    yield_spread_min: 0.0               # risk-off if curve inverted
-
-# ── Fundamental Factors (Phase 2) ────────────────────────────
-fundamental_factors:
-
-  # Tier 1 — quality & profitability (all from XBRL)
-  gross_profitability:
-    enabled: true
-    formula: "GrossProfit / TotalAssets"    # Novy-Marx (2013)
-    lookback_quarters: 4                    # trailing 4Q average
-  fcf_yield:
-    enabled: true
-    formula: "FreeCashFlow / EnterpriseValue"
-    lookback_quarters: 4
-  revenue_acceleration:
-    enabled: true
-    # Change in YoY revenue growth rate, QoQ (second derivative)
-    lookback_quarters: 5                    # need 5Q to compute 4 YoY deltas
-
-  # Tier 1 — earnings surprise (requires analyst estimates via Simfin)
-  earnings_surprise:
-    enabled: true
-    method: "sue"                           # standardized unexpected earnings
-    fallback: "seasonal_random_walk"        # use if Simfin coverage < 70% of universe
-    fallback_threshold: 0.70               # minimum fraction of universe covered
-  eps_revision_momentum:
-    enabled: true
-    lookback_months: 3                      # direction + magnitude of estimate changes
-    source: "simfin"
-
-  # Tier 2 — XBRL-specific signals (SaaS / enterprise software focus)
-  deferred_revenue_growth:
-    enabled: true
-    xbrl_tag: "DeferredRevenue"
-    growth_window_quarters: 4              # YoY growth rate
-  rd_intensity_trend:
-    enabled: true
-    formula: "ResearchAndDevelopmentExpense / Revenues"
-    trend_window_quarters: 4              # 4Q trend (rising = investing; falling = cutting)
-
-  # FinBERT sentiment (8-K earnings call filings)
-  finbert_sentiment:
-    enabled: true
-    source: "sec_8k"                      # earnings releases from SEC EDGAR
-    model: "ProsusAI/finbert"             # HuggingFace model ID
-    max_tokens: 512
-    output: "numeric_score"              # -1.0 (bearish) → +1.0 (bullish)
-    filing_types: ["8-K"]               # expand to 10-K MD&A in later sprint
-
-  # Factor weights for fundamental composite score
-  weights:
-    gross_profitability:    0.20
-    fcf_yield:              0.20
-    revenue_acceleration:   0.15
-    earnings_surprise:      0.20
-    eps_revision_momentum:  0.10
-    deferred_revenue_growth: 0.05
-    rd_intensity_trend:     0.05
-    finbert_sentiment:      0.05
-
-  # Portfolio construction (mirrors quant for fair comparison)
-  rebalance_freq: "quarterly"            # fundamentals update quarterly
-  long_only: true
-  top_n: 20
-  min_score_threshold: 0.0              # must be positive composite to be held
+  top_n: 20                             # hold top-N stocks by composite score
 
 # ── ML Combiner (Phase 3) ─────────────────────────────────────
-# Only built if both Phase 1 and Phase 2 show independent alpha
 ml:
   model: "xgboost"
-  fallback_model: "logistic_regression"  # simpler baseline for comparison
   cv_folds: 5
   train_window_years: 3
   retrain_freq: "quarterly"
-  # Regime-adaptive weighting: XGBoost learns to weight factors by VIX + yield curve
-  regime_features:
-    - "vix"
-    - "yield_spread_10y2y"
-    - "cpi"
-    - "fed_funds_rate"
-  # Phase 3 input features (all factor scores from Phase 1 + 2)
-  quant_features:
-    - "momentum_1m"
-    - "momentum_3m"
-    - "momentum_6m"
-    - "momentum_12m"
-    - "volume_zscore"
-    - "inv_vol"
-    - "short_interest_dtc"
-  fundamental_features:
-    - "gross_profitability"
-    - "fcf_yield"
-    - "revenue_acceleration"
-    - "earnings_surprise_sue"
-    - "eps_revision_3m"
-    - "deferred_revenue_growth"
-    - "rd_intensity_trend"
-    - "finbert_score"
-  # RSI / MACD — input features only, not standalone signals
-  technical_features:
-    - "rsi_14"
-    - "macd_signal"
 
 # ── Backtest ─────────────────────────────────────────────────
 backtest:
@@ -219,3 +99,12 @@ backtest:
 dashboard:
   port: 8501
   theme: "dark"
+
+# ── RAG Pipeline (Phase 4a) ──────────────────────────────────
+rag:
+  embedding_model: "all-MiniLM-L6-v2"
+  llm_backend: "ollama"
+  llm_model: "mistral"
+  chroma_db_dir: "data/chroma_db"
+  research_papers_dir: "research_papers"
+  research_wiki_dir: "research_wiki"

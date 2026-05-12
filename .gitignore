@@ -51,4 +51,11 @@ models/
 # ── Backtest artifacts (keep reports, exclude raw result dumps)
 backtests/results/*.pkl
 .pytest_cache/
-.pytest_cache/
+
+# ── Phase 4: RAG artifacts ────────────────────────────────────
+data/chroma_db/              # ChromaDB vector store (large binary, rebuilt via --ingest)
+research_papers/**/*.pdf     # downloaded PDFs (reproducible via scripts/download_papers.py)
+
+# ── Research wiki session outputs (keep structure + seed notes)
+research_wiki/research/
+research_wiki/companies/
