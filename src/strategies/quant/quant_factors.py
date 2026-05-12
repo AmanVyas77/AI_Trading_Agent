@@ -315,16 +315,28 @@ def print_metrics(results: dict) -> None:
 
 
 def save_results(results: dict, tag: str = "quant_sprint1") -> None:
-    """Save portfolio objects and HTML tearsheet."""
-    import pickle
+    """Save strategy stats, equity curves, and HTML tearsheet."""
+    # Save stats as CSV (VectorBT portfolios can't be pickled directly)
+    stats_path = RESULTS_DIR / f"{tag}_stats.csv"
+    strat_stats = results["strategy"].stats().to_frame("strategy")
+    bench_stats = results["benchmark"].stats().to_frame("benchmark")
+    pd.concat([strat_stats, bench_stats], axis=1).to_csv(stats_path)
+    logger.info(f"Saved stats → {stats_path}")
 
-    pkl_path = RESULTS_DIR / f"{tag}.pkl"
-    with open(pkl_path, "wb") as f:
-        pickle.dump(results, f)
-    logger.info(f"Saved portfolio objects → {pkl_path}")
+    # Save equity curves as CSV for dashboard consumption
+    equity_path = RESULTS_DIR / f"{tag}_equity.csv"
+    strat_value = results["strategy"].value()
+    bench_value = results["benchmark"].value()
+    equity_df = pd.DataFrame({
+        "strategy": strat_value,
+        "benchmark": bench_value,
+    })
+    equity_df.to_csv(equity_path)
+    logger.info(f"Saved equity curves → {equity_path}")
 
+    # Save HTML tearsheet
     html_path = REPORTS_DIR / f"{tag}.html"
-    results["strategy"].stats().to_frame("Strategy").to_html(str(html_path))
+    strat_stats.to_html(str(html_path))
     logger.info(f"Saved report → {html_path}")
 
 
