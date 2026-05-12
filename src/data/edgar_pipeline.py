@@ -207,7 +207,9 @@ def extract_ticker_facts(ticker: str, cik: str) -> pd.DataFrame:
     for concept, tags in XBRL_TAGS.items():
         s = extract_tag_series(facts, tags)
         if not s.empty:
-            series_dict[concept] = s.set_index("end")["val"]
+            # Group by date and take last value to eliminate duplicate period-end dates
+            # (EDGAR sometimes has both 10-K and 10-Q for the same end date)
+            series_dict[concept] = s.set_index("end")["val"].groupby(level=0).last()
 
     if not series_dict:
         logger.warning(f"[{ticker}] No XBRL data extracted")
@@ -284,6 +286,11 @@ def upsert_facts(df: pd.DataFrame, engine) -> None:
         if col not in df.columns:
             df[col] = None
 
+    # Convert Timestamp → string so SQLite can bind it
+    df["end_date"] = df["end_date"].apply(
+        lambda x: x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else str(x)
+    )
+
     with engine.begin() as conn:
         for _, row in df[cols].iterrows():
             conn.execute(text("""
@@ -348,13 +355,13 @@ def compute_derived_features(
         grp["gross_profitability"] = grp["gross_profit"] / grp["total_assets"]
 
         # Revenue YoY growth
-        grp["revenue_yoy"] = grp["revenue"].pct_change(4)  # 4 quarters back
+        grp["revenue_yoy"] = grp["revenue"].pct_change(4, fill_method=None)
 
         # Revenue Acceleration: change in YoY growth rate, QoQ
         grp["revenue_acceleration"] = grp["revenue_yoy"].diff(1)
 
         # Deferred Revenue YoY growth
-        grp["deferred_revenue_yoy"] = grp["deferred_revenue"].pct_change(4)
+        grp["deferred_revenue_yoy"] = grp["deferred_revenue"].pct_change(4, fill_method=None)
 
         # R&D Intensity: R&D / Revenue
         grp["rd_intensity"] = grp["rd_expense"] / grp["revenue"]
@@ -376,6 +383,11 @@ def compute_derived_features(
         return pd.DataFrame()
 
     derived = pd.concat(derived_all, ignore_index=True)
+
+    # Convert Timestamp → string for SQLite
+    derived["end_date"] = derived["end_date"].apply(
+        lambda x: x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else str(x)
+    )
 
     # Upsert to DB
     with engine.begin() as conn:

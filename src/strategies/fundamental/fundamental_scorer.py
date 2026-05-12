@@ -39,7 +39,6 @@ CLI
 from __future__ import annotations
 
 import logging
-import pickle
 from pathlib import Path
 from typing import Optional
 
@@ -463,25 +462,30 @@ def save_results(
     scores_df: pd.DataFrame,
     tag: str = "fundamental_sprint2",
 ) -> None:
-    """Save portfolio objects, HTML report, and composite scores."""
+    """Save stats CSVs, equity curves, HTML report, and composite scores."""
 
-    # Pickle portfolio objects
-    pkl_data = {}
-    if results_train:
-        pkl_data["train"] = {
-            "strategy": results_train["strategy"],
-            "benchmark": results_train["benchmark"],
-        }
-    if results_test:
-        pkl_data["test"] = {
-            "strategy": results_test["strategy"],
-            "benchmark": results_test["benchmark"],
-        }
+    # Save stats and equity curves for each period
+    for period_label, res in [("train", results_train), ("test", results_test)]:
+        if res is None:
+            continue
+        try:
+            strat_stats = res["strategy"].stats().to_frame("strategy")
+            bench_stats = res["benchmark"].stats().to_frame("benchmark")
+            stats_path = RESULTS_DIR / f"{tag}_{period_label}_stats.csv"
+            pd.concat([strat_stats, bench_stats], axis=1).to_csv(stats_path)
+            logger.info(f"Saved {period_label} stats → {stats_path}")
+        except Exception as e:
+            logger.warning(f"Could not save {period_label} stats: {e}")
 
-    pkl_path = RESULTS_DIR / f"{tag}.pkl"
-    with open(pkl_path, "wb") as f:
-        pickle.dump(pkl_data, f)
-    logger.info(f"Saved portfolio objects → {pkl_path}")
+        try:
+            equity_path = RESULTS_DIR / f"{tag}_{period_label}_equity.csv"
+            pd.DataFrame({
+                "strategy": res["strategy"].value(),
+                "benchmark": res["benchmark"].value(),
+            }).to_csv(equity_path)
+            logger.info(f"Saved {period_label} equity curves → {equity_path}")
+        except Exception as e:
+            logger.warning(f"Could not save {period_label} equity: {e}")
 
     # HTML report
     html_path = REPORTS_DIR / f"{tag}.html"

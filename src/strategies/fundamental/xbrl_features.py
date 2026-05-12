@@ -140,6 +140,18 @@ def _load_eps_revisions(tickers, engine) -> pd.DataFrame:
 
 
 def _load_short_interest(tickers, engine) -> pd.DataFrame:
+    # Check table exists — FINRA data may be unavailable
+    try:
+        with engine.connect() as conn:
+            tables = conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='short_interest'"
+            )).fetchall()
+        if not tables:
+            logger.warning("short_interest table not found — skipping DTC signal")
+            return pd.DataFrame(columns=["ticker", "date", "days_to_cover"])
+    except Exception:
+        return pd.DataFrame(columns=["ticker", "date", "days_to_cover"])
+
     clause, params = _ticker_where(tickers)
     where = f"WHERE {clause}" if clause else ""
     sql = f"SELECT ticker, date, days_to_cover FROM short_interest {where} ORDER BY ticker, date"
@@ -151,6 +163,18 @@ def _load_short_interest(tickers, engine) -> pd.DataFrame:
 
 
 def _load_sentiment(tickers, engine) -> pd.DataFrame:
+    # Check table exists first — FinBERT pipeline may not have run yet
+    try:
+        with engine.connect() as conn:
+            tables = conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sentiment_scores'"
+            )).fetchall()
+        if not tables:
+            logger.warning("sentiment_scores table not found — skipping FinBERT signal")
+            return pd.DataFrame(columns=["ticker", "filing_date", "finbert_score"])
+    except Exception:
+        return pd.DataFrame(columns=["ticker", "filing_date", "finbert_score"])
+
     clause, params = _ticker_where(tickers)
     where = f"WHERE {clause}" if clause else ""
     sql = f"SELECT ticker, filing_date, finbert_score FROM sentiment_scores {where} ORDER BY ticker, filing_date"
