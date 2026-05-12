@@ -50,3 +50,5 @@ models/
 
 # ── Backtest artifacts (keep reports, exclude raw result dumps)
 backtests/results/*.pkl
+.pytest_cache/
+.pytest_cache/
