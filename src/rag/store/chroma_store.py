@@ -224,7 +224,9 @@ class ChromaStore:
 
 def _chunk_id(chunk: Chunk) -> str:
     """Deterministic content-based ID so re-ingestion is idempotent."""
-    content = chunk.text + json.dumps(chunk.metadata, sort_keys=True)
+    content = chunk.text + json.dumps(
+        {k: str(v) for k, v in chunk.metadata.items()}, sort_keys=True
+    )
     return hashlib.sha1(content.encode()).hexdigest()
 
 
