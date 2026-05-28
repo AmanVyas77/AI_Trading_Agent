@@ -103,8 +103,8 @@ dashboard:
 # ── RAG Pipeline (Phase 4a) ──────────────────────────────────
 rag:
   embedding_model: "all-MiniLM-L6-v2"
-  llm_backend: "ollama"
-  llm_model: "mistral"
+  llm_backend: "anthropic"
+  llm_model: "claude-haiku-4-5-20251001"
   chroma_db_dir: "data/chroma_db"
   research_papers_dir: "research_papers"
   research_wiki_dir: "research_wiki"

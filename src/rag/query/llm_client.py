@@ -54,8 +54,10 @@ class LLMClient:
     temperature: generation temperature (lower = more factual)
     """
 
-    OLLAMA_DEFAULT_MODEL     = "mistral"
+    OLLAMA_DEFAULT_MODEL     = "gemma4:e4b"
     ANTHROPIC_DEFAULT_MODEL  = "claude-sonnet-4-6"
+    DEEPSEEK_DEFAULT_MODEL   = "deepseek-chat"
+    GEMINI_DEFAULT_MODEL     = "gemini-2.0-flash"
 
     def __init__(
         self,
@@ -72,11 +74,13 @@ class LLMClient:
         logger.info(f"LLMClient: backend={self.backend}, model={self.model}")
 
     def _default_model(self) -> str:
-        return (
-            self.ANTHROPIC_DEFAULT_MODEL
-            if self.backend == "anthropic"
-            else self.OLLAMA_DEFAULT_MODEL
-        )
+        if self.backend == "anthropic":
+            return self.ANTHROPIC_DEFAULT_MODEL
+        if self.backend == "deepseek":
+            return self.DEEPSEEK_DEFAULT_MODEL
+        if self.backend == "gemini":
+            return self.GEMINI_DEFAULT_MODEL
+        return self.OLLAMA_DEFAULT_MODEL
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -88,6 +92,10 @@ class LLMClient:
         """
         if self.backend == "anthropic":
             yield from self._stream_anthropic(prompt)
+        elif self.backend == "deepseek":
+            yield from self._stream_deepseek(prompt)
+        elif self.backend == "gemini":
+            yield from self._stream_gemini(prompt)
         else:
             yield from self._stream_ollama(prompt)
 
@@ -127,6 +135,68 @@ class LLMClient:
                     f"Then pull the model: ollama pull {self.model}"
                 ) from exc
             raise
+
+    # ── Gemini backend ────────────────────────────────────────────────────────
+
+    def _stream_gemini(self, prompt: str) -> Generator[str, None, None]:
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError:
+            raise ImportError(
+                "google-genai not installed. Run: pip install google-genai"
+            )
+
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "GEMINI_API_KEY environment variable not set.\n"
+                "Get your free key at: https://aistudio.google.com\n"
+                "Then add to .env: GEMINI_API_KEY=AIza..."
+            )
+
+        client = genai.Client(api_key=api_key)
+
+        for chunk in client.models.generate_content_stream(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=self.temperature,
+                max_output_tokens=2048,
+            ),
+        ):
+            if chunk.text:
+                yield chunk.text
+
+    # ── DeepSeek backend ──────────────────────────────────────────────────────
+
+    def _stream_deepseek(self, prompt: str) -> Generator[str, None, None]:
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "DEEPSEEK_API_KEY environment variable not set.\n"
+                "Get your key at: https://platform.deepseek.com\n"
+                "Then add it to your .env file: DEEPSEEK_API_KEY=sk-..."
+            )
+
+        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+
+        with client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.temperature,
+            max_tokens=2048,
+            stream=True,
+        ) as stream:
+            for chunk in stream:
+                token = chunk.choices[0].delta.content
+                if token:
+                    yield token
 
     # ── Anthropic backend ─────────────────────────────────────────────────────
 
