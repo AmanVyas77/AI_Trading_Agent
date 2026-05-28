@@ -59,6 +59,8 @@ FEATURE_COLS = [
     "short_interest_dtc",
     "finbert_score",
     "piotroski_f",
+    "qmj_safety",
+    "qmj_payout",
 ]
 
 # Maximum forward-fill horizon for fundamental data (2 quarters ≈ 180 days)
@@ -447,6 +449,324 @@ def compute_piotroski_f(
     return out.reset_index(drop=True)
 
 
+# ── QMJ Quality Factor (Asness, Frazzini & Pedersen 2019) ────────────────────
+
+def _xs_zscore_series(values: pd.Series, group_keys: pd.Series) -> pd.Series:
+    """
+    Cross-sectional z-score of ``values`` grouped by ``group_keys`` (typically
+    quarter_end).  Mirrors `_zscore_cross_section` semantics: winsorises at
+    ±ZSCORE_CAP and returns NaN when a group has fewer than
+    MIN_OBS_FOR_ZSCORE non-null observations.  Used inside compute_qmj_safety
+    and compute_qmj_payout to standardise sub-signals onto a comparable scale
+    before averaging — QMJ sub-signals (e.g. leverage in units vs beta unitless)
+    cannot be averaged raw without one dominating the composite.
+    """
+    def _g(s: pd.Series) -> pd.Series:
+        valid = s.dropna()
+        if len(valid) < MIN_OBS_FOR_ZSCORE:
+            return pd.Series(np.nan, index=s.index)
+        mu, sigma = valid.mean(), valid.std()
+        if sigma == 0 or np.isnan(sigma):
+            return pd.Series(0.0, index=s.index)
+        z = (s - mu) / sigma
+        return z.clip(-ZSCORE_CAP, ZSCORE_CAP)
+
+    return values.groupby(group_keys, sort=False).transform(_g)
+
+
+def _compute_qe_beta(
+    stock_tickers: list[str],
+    engine,
+    window_days: int = 756,   # ~36 months of trading days (252 × 3)
+    min_periods: int = 252,   # require at least 12 months before producing a beta
+) -> pd.DataFrame:
+    """
+    Rolling 36-month CAPM beta of each ticker's daily returns vs SPY,
+    sampled at quarter-end.
+
+    Returns DataFrame [ticker, quarter_end, beta_36m].  If SPY is not in the
+    prices table (universe never loaded the benchmark series), logs a warning
+    and returns an empty frame — compute_qmj_safety will then leave the beta
+    sub-signal NaN and the pillar will be averaged from the two remaining
+    sub-signals.
+    """
+    universe = sorted(set(stock_tickers) | {"SPY"})
+    px = _load_prices_wide(universe, start=None, end=None, engine=engine)
+    if px.empty or "SPY" not in px.columns:
+        logger.warning("QMJ Safety: SPY prices not in DB — beta sub-signal will be NaN")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "beta_36m"])
+
+    rets = px.pct_change()
+    spy_rets = rets["SPY"]
+    spy_var = spy_rets.rolling(window_days, min_periods=min_periods).var()
+
+    frames = []
+    for tk in stock_tickers:
+        if tk == "SPY" or tk not in rets.columns:
+            continue
+        stk_rets = rets[tk]
+        rolling_cov = stk_rets.rolling(window_days, min_periods=min_periods).cov(spy_rets)
+        beta = rolling_cov / spy_var
+        qe_beta = (
+            beta.resample("QE").last()
+                .rename_axis("quarter_end")
+                .to_frame("beta_36m")
+                .reset_index()
+        )
+        qe_beta["ticker"] = tk
+        frames.append(qe_beta[["ticker", "quarter_end", "beta_36m"]])
+
+    if not frames:
+        return pd.DataFrame(columns=["ticker", "quarter_end", "beta_36m"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def compute_qmj_safety(
+    tickers: Optional[list[str]] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    engine=None,
+) -> pd.DataFrame:
+    """
+    QMJ Safety pillar — Asness, Frazzini & Pedersen (2019), "Quality Minus Junk".
+
+    Three sub-signals, each cross-sectionally z-scored per quarter_end and
+    sign-inverted so "lower-is-safer" maps to higher score:
+
+      1. Leverage     = long_term_debt / stockholders_equity
+      2. Earnings vol = rolling 5-quarter std of ROE (net_income / equity)
+      3. Beta         = rolling 36-month CAPM beta vs SPY (daily returns)
+
+    Equally weighted (1/3 each) within the pillar.  Row-wise mean of the
+    available z-scored sub-signals (``skipna=True``) — a ticker missing one
+    sub-signal is scored on the other two, matching the missing-weight
+    redistribution convention already used by
+    ``fundamental_scorer.compute_composite_scores``.
+
+    Negative-equity rows are excluded from leverage and ROE (debt-to-equity
+    is undefined when E ≤ 0).  If SPY is not in the prices table the beta
+    sub-signal is dropped from the average.
+
+    Returns
+    -------
+    pd.DataFrame [ticker, quarter_end, qmj_safety]
+    Already roughly standardised; ``build_feature_matrix``'s outer z-score
+    pass is approximately idempotent on it.
+    """
+    engine = _get_engine(engine)
+
+    clause, params = _ticker_where(tickers)
+    where = f"WHERE {clause}" if clause else ""
+    sql = (
+        "SELECT ticker, end_date, net_income, stockholders_equity, "
+        f"long_term_debt FROM xbrl_facts {where} ORDER BY ticker, end_date"
+    )
+    try:
+        with engine.connect() as conn:
+            facts = pd.read_sql_query(text(sql), conn, params=params)
+    except Exception as e:
+        logger.warning(f"QMJ Safety SQL load failed: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "qmj_safety"])
+
+    if facts.empty:
+        logger.warning("xbrl_facts returned no rows for QMJ Safety computation")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "qmj_safety"])
+
+    facts["end_date"] = pd.to_datetime(facts["end_date"])
+    raw_inputs = ["net_income", "stockholders_equity", "long_term_debt"]
+    qe_facts = _to_quarterly(facts, "end_date", raw_inputs)
+    qe_facts = qe_facts.sort_values(["ticker", "quarter_end"]).reset_index(drop=True)
+
+    # ── Sub-signal 1: Leverage = LT debt / equity (neg equity invalidates) ─
+    eq = qe_facts["stockholders_equity"]
+    eq_safe = eq.where(eq > 0, np.nan)
+    qe_facts["leverage_de"] = qe_facts["long_term_debt"] / eq_safe
+
+    # ── Sub-signal 2: Earnings variability — 5-quarter rolling std of ROE ──
+    qe_facts["roe"] = qe_facts["net_income"] / eq_safe
+    qe_facts["earnings_vol"] = (
+        qe_facts.groupby("ticker", sort=False)["roe"]
+                .transform(lambda s: s.rolling(window=5, min_periods=5).std())
+    )
+
+    # ── Sub-signal 3: 36-month rolling beta vs SPY ─────────────────────────
+    qe_beta = _compute_qe_beta(qe_facts["ticker"].unique().tolist(), engine)
+    qe_facts = qe_facts.merge(qe_beta, on=["ticker", "quarter_end"], how="left")
+
+    # ── Z-score each sub-signal per quarter, invert (lower = safer = higher z)
+    qe_facts["leverage_z"]     = -_xs_zscore_series(qe_facts["leverage_de"],   qe_facts["quarter_end"])
+    qe_facts["earnings_vol_z"] = -_xs_zscore_series(qe_facts["earnings_vol"],  qe_facts["quarter_end"])
+    qe_facts["beta_z"]         = -_xs_zscore_series(qe_facts["beta_36m"],      qe_facts["quarter_end"])
+
+    qe_facts["qmj_safety"] = qe_facts[["leverage_z", "earnings_vol_z", "beta_z"]].mean(axis=1, skipna=True)
+
+    out = qe_facts[["ticker", "quarter_end", "qmj_safety"]].copy()
+    if start is not None:
+        out = out[out["quarter_end"] >= pd.Timestamp(start)]
+    if end is not None:
+        out = out[out["quarter_end"] <= pd.Timestamp(end)]
+
+    n_total = len(out)
+    n_valid = int(out["qmj_safety"].notna().sum())
+    if n_total:
+        logger.info(
+            f"QMJ Safety: {n_valid}/{n_total} rows, "
+            f"mean={out['qmj_safety'].mean():.3f}, "
+            f"tickers={out['ticker'].nunique()}"
+        )
+    else:
+        logger.warning("QMJ Safety: no rows in requested window")
+
+    return out.reset_index(drop=True)
+
+
+def compute_qmj_payout(
+    tickers: Optional[list[str]] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    engine=None,
+) -> pd.DataFrame:
+    """
+    QMJ Payout pillar — Asness, Frazzini & Pedersen (2019).
+
+    Two sub-signals, equally weighted (1/2 each), z-scored cross-sectionally
+    per quarter:
+
+      1. Anti-dilution    — −((shares_T − shares_{T-4}) / shares_{T-4})
+                             so buybacks score positive, dilution negative
+                             (requires `shares_outstanding`)
+      2. Total payout yld — (dividends_paid + share_repurchases) / total_assets
+                             (denominator change vs. classical QMJ: total_assets
+                             is a simpler scaling that doesn't require a price
+                             merge or shares_outstanding — Session 3 only needs
+                             to add dividends_paid + share_repurchases to
+                             activate this signal, not shares_outstanding too.)
+
+    Schema gaps (Session-3 deferral)
+    -------------------------------
+    `shares_outstanding`, `dividends_paid`, and `share_repurchases` are
+    recent additions to `xbrl_facts` and are NOT yet present at the time of
+    Session 2.  Optional columns are substituted with `NULL AS <col>` so
+    this function does not crash on legacy data:
+
+      • Anti-dilution sub-signal activates when shares_outstanding lands.
+      • Total payout yield activates when dividends_paid + share_repurchases
+        land (independent of shares_outstanding).
+
+    Within-row missing-value policy
+    -------------------------------
+    When the columns ARE present but a row has NULL dividends or NULL
+    repurchases, those values are treated as 0 (assumed no payout that
+    quarter).  A NULL `total_assets` invalidates payout_yield for that
+    row; a NULL `shares_outstanding` invalidates anti-dilution.
+
+    Returns
+    -------
+    pd.DataFrame [ticker, quarter_end, qmj_payout]
+    """
+    engine = _get_engine(engine)
+
+    try:
+        with engine.connect() as conn:
+            existing = {
+                r[1] for r in conn.execute(text("PRAGMA table_info(xbrl_facts)")).fetchall()
+            }
+    except Exception as e:
+        logger.warning(f"Could not introspect xbrl_facts schema for QMJ Payout: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "qmj_payout"])
+
+    required = {"total_assets"}
+    optional = ["shares_outstanding", "dividends_paid", "share_repurchases"]
+
+    missing_required = required - existing
+    if missing_required:
+        logger.warning(
+            f"xbrl_facts missing required columns for QMJ Payout: "
+            f"{sorted(missing_required)} — returning empty frame"
+        )
+        return pd.DataFrame(columns=["ticker", "quarter_end", "qmj_payout"])
+
+    missing_optional = [c for c in optional if c not in existing]
+    if missing_optional:
+        logger.warning(
+            f"xbrl_facts missing optional QMJ Payout columns: {missing_optional} "
+            "— affected sub-signals will be NaN until Session 3 schema extension"
+        )
+
+    select_cols = ["ticker", "end_date", "total_assets"]
+    for col in optional:
+        select_cols.append(col if col in existing else f"NULL AS {col}")
+
+    clause, params = _ticker_where(tickers)
+    where = f"WHERE {clause}" if clause else ""
+    sql = (
+        f"SELECT {', '.join(select_cols)} FROM xbrl_facts "
+        f"{where} ORDER BY ticker, end_date"
+    )
+    try:
+        with engine.connect() as conn:
+            facts = pd.read_sql_query(text(sql), conn, params=params)
+    except Exception as e:
+        logger.warning(f"QMJ Payout SQL load failed: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "qmj_payout"])
+
+    if facts.empty:
+        logger.warning("xbrl_facts returned no rows for QMJ Payout computation")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "qmj_payout"])
+
+    facts["end_date"] = pd.to_datetime(facts["end_date"])
+    raw_inputs = ["total_assets", "shares_outstanding",
+                  "dividends_paid", "share_repurchases"]
+    qe_facts = _to_quarterly(facts, "end_date", raw_inputs)
+    qe_facts = qe_facts.sort_values(["ticker", "quarter_end"]).reset_index(drop=True)
+
+    # ── Sub-signal 1: anti-dilution = -(ΔShares_YoY / Shares_lag4) ────────
+    qe_facts["shares_lag4"] = qe_facts.groupby("ticker", sort=False)["shares_outstanding"].shift(4)
+    qe_facts["dilution_yoy"] = (
+        (qe_facts["shares_outstanding"] - qe_facts["shares_lag4"])
+        / qe_facts["shares_lag4"].replace(0, np.nan)
+    )
+    qe_facts["anti_dilution"] = -qe_facts["dilution_yoy"]
+
+    # ── Sub-signal 2: total payout yield = (div + repo) / total_assets ────
+    # Treat NULL dividends/repurchases as 0 *only* when the column is in the
+    # schema (then NULL means "no payout").  When the column itself is missing
+    # (NULL AS), the values stay NaN and propagate so payout_yield is NaN
+    # rather than a spurious 0 / total_assets.
+    if "dividends_paid" in existing:
+        qe_facts["dividends_paid"] = qe_facts["dividends_paid"].fillna(0)
+    if "share_repurchases" in existing:
+        qe_facts["share_repurchases"] = qe_facts["share_repurchases"].fillna(0)
+    qe_facts["gross_payout"] = qe_facts["dividends_paid"] + qe_facts["share_repurchases"]
+
+    qe_facts["payout_yield"] = qe_facts["gross_payout"] / qe_facts["total_assets"].replace(0, np.nan)
+
+    # ── Z-score sub-signals cross-sectionally per quarter ─────────────────
+    z_anti  = _xs_zscore_series(qe_facts["anti_dilution"], qe_facts["quarter_end"])
+    z_yield = _xs_zscore_series(qe_facts["payout_yield"],  qe_facts["quarter_end"])
+
+    qe_facts["qmj_payout"] = pd.concat([z_anti, z_yield], axis=1).mean(axis=1, skipna=True)
+
+    out = qe_facts[["ticker", "quarter_end", "qmj_payout"]].copy()
+    if start is not None:
+        out = out[out["quarter_end"] >= pd.Timestamp(start)]
+    if end is not None:
+        out = out[out["quarter_end"] <= pd.Timestamp(end)]
+
+    n_total = len(out)
+    n_valid = int(out["qmj_payout"].notna().sum())
+    if n_total:
+        logger.info(
+            f"QMJ Payout: {n_valid}/{n_total} rows, "
+            f"mean={out['qmj_payout'].mean():.3f}, "
+            f"tickers={out['ticker'].nunique()}"
+        )
+    else:
+        logger.warning("QMJ Payout: no rows in requested window")
+
+    return out.reset_index(drop=True)
+
+
 # ── cross-sectional z-scoring ─────────────────────────────────────────────────
 
 def _zscore_cross_section(df: pd.DataFrame) -> pd.DataFrame:
@@ -565,10 +885,21 @@ def build_feature_matrix(
         tickers=tickers, start=start, end=end, engine=engine,
     )
 
+    # 7c. QMJ Safety pillar (Asness, Frazzini & Pedersen 2019)
+    qe_qmj_safety = compute_qmj_safety(
+        tickers=tickers, start=start, end=end, engine=engine,
+    )
+
+    # 7d. QMJ Payout pillar
+    qe_qmj_payout = compute_qmj_payout(
+        tickers=tickers, start=start, end=end, engine=engine,
+    )
+
     # 8. Merge everything on (ticker, quarter_end)
     base_qe = _quarter_end_index(start, end)
     all_tickers = set()
-    for frame in [qe_derived, qe_fcf, qe_sue, qe_rev, qe_si, qe_sent, qe_pio]:
+    for frame in [qe_derived, qe_fcf, qe_sue, qe_rev, qe_si, qe_sent,
+                  qe_pio, qe_qmj_safety, qe_qmj_payout]:
         if isinstance(frame, pd.DataFrame) and not frame.empty and "ticker" in frame.columns:
             all_tickers.update(frame["ticker"].unique())
     if tickers:
@@ -596,6 +927,8 @@ def build_feature_matrix(
     matrix = _merge(matrix, qe_si)
     matrix = _merge(matrix, qe_sent)
     matrix = _merge(matrix, qe_pio)
+    matrix = _merge(matrix, qe_qmj_safety)
+    matrix = _merge(matrix, qe_qmj_payout)
 
     # 9. Missing-data handling
     #  a. Forward-fill up to 2 quarters per ticker for fundamental cols

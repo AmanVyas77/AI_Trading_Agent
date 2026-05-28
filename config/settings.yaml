@@ -112,18 +112,22 @@ rag:
 # ── Fundamental Factors (Phase 2) ─────────────────────────────
 fundamental_factors:
   # Composite-score weights — must sum to 1.0
-  # Baseline (pre-Piotroski) sums to 1.00; Piotroski 0.10 was sourced
-  # proportionally from the top-4 weights (each reduced by 0.025).
+  # Session 1 added Piotroski 0.10, sourced from top-4 (each −0.025).
+  # Session 2 added QMJ Safety 0.075 + QMJ Payout 0.05 (total 0.125), sourced
+  # from top-4: gross_profitability/fcf_yield/earnings_surprise each −0.035,
+  # revenue_acceleration −0.020.  Verified sum = 1.000.
   weights:
-    gross_profitability:     0.175
-    fcf_yield:               0.175
-    revenue_acceleration:    0.125
-    earnings_surprise:       0.175
+    gross_profitability:     0.140
+    fcf_yield:               0.140
+    revenue_acceleration:    0.105
+    earnings_surprise:       0.140
     eps_revision_momentum:   0.10
     deferred_revenue_growth: 0.05
     rd_intensity_trend:      0.05
     finbert_sentiment:       0.05
-    piotroski_f_score:       0.10   # NEW — Piotroski (2000) F-Score
+    piotroski_f_score:       0.10   # Session 1 — Piotroski (2000) F-Score
+    qmj_safety:              0.075  # Session 2 — Asness/Frazzini/Pedersen (2019) Safety
+    qmj_payout:              0.05   # Session 2 — Asness/Frazzini/Pedersen (2019) Payout
   # Portfolio construction (mirrors hard-coded defaults in fundamental_scorer.py)
   rebalance_freq: "quarterly"
   long_only: true
