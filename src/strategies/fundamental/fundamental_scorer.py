@@ -81,6 +81,7 @@ _WEIGHT_MAP: dict[str, tuple[str, float]] = {
     "deferred_revenue_growth":("deferred_revenue_yoy",   FF_CFG["weights"]["deferred_revenue_growth"]),
     "rd_intensity_trend":     ("rd_intensity",           FF_CFG["weights"]["rd_intensity_trend"]),
     "finbert_sentiment":      ("finbert_score",          FF_CFG["weights"]["finbert_sentiment"]),
+    "piotroski_f_score":      ("piotroski_f",            FF_CFG["weights"]["piotroski_f_score"]),
 }
 
 # Portfolio construction params

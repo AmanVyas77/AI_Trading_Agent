@@ -58,6 +58,7 @@ FEATURE_COLS = [
     "eps_revision_3m",
     "short_interest_dtc",
     "finbert_score",
+    "piotroski_f",
 ]
 
 # Maximum forward-fill horizon for fundamental data (2 quarters ≈ 180 days)
@@ -265,6 +266,187 @@ def _compute_fcf_yield(facts: pd.DataFrame, prices_wide: pd.DataFrame) -> pd.Dat
     return merged[["ticker", "quarter_end", "fcf_yield"]]
 
 
+# ── Piotroski F-Score (Piotroski 2000) ────────────────────────────────────────
+
+def compute_piotroski_f(
+    tickers: Optional[list[str]] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    engine=None,
+) -> pd.DataFrame:
+    """
+    Piotroski F-Score for each (ticker, quarter_end) — Piotroski (2000),
+    "Value Investing: The Use of Historical Financial Statement Information."
+
+    The F-Score is the sum of 9 binary signals (1 point if positive, else 0):
+
+      Profitability
+        F1: ROA > 0              (net_income / total_assets)
+        F2: CFO > 0              (operating_cf)
+        F3: ΔROA > 0             (ROA improved YoY)
+        F4: Accruals < 0         (CFO/assets − ROA, i.e. cash > accrual earnings)
+
+      Leverage / Liquidity
+        F5: ΔLeverage < 0        (long_term_debt/total_assets decreased YoY)
+        F6: ΔLiquidity > 0       (current_ratio improved YoY)
+        F7: No dilution          (shares_outstanding did not increase YoY)
+
+      Operating Efficiency
+        F8: ΔGross margin > 0    (gross_profit/revenue improved YoY)
+        F9: ΔAsset turnover > 0  (revenue/total_assets improved YoY)
+
+    Missing-data policy
+    -------------------
+    A NULL input deterministically fails its signal (0).  If every raw input
+    for a row is NULL, the row's F-Score is returned as NaN so downstream
+    code can distinguish "no data" from "score of 0".
+
+    Schema notes
+    ------------
+    Uses the actual xbrl_facts column name ``operating_cf`` (not
+    ``operating_cash_flow``).  ``current_assets``, ``current_liabilities``,
+    and ``shares_outstanding`` are recent schema additions; if a column is
+    not yet present in xbrl_facts it is treated as NULL via ``NULL AS <col>``
+    so this function does not crash on legacy ingestion data.
+
+    Returns
+    -------
+    pd.DataFrame with columns [ticker, quarter_end, piotroski_f]
+    piotroski_f is an integer 0–9 (or NaN when all inputs are missing).
+    Z-scoring is intentionally NOT applied here — build_feature_matrix()
+    handles cross-sectional standardisation for every feature in FEATURE_COLS.
+    """
+    engine = _get_engine(engine)
+
+    # Introspect xbrl_facts to know which optional columns we can SELECT.
+    try:
+        with engine.connect() as conn:
+            existing = {
+                r[1] for r in conn.execute(text("PRAGMA table_info(xbrl_facts)")).fetchall()
+            }
+    except Exception as e:
+        logger.warning(f"Could not introspect xbrl_facts schema for Piotroski: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "piotroski_f"])
+
+    required = {"net_income", "total_assets", "operating_cf",
+                "long_term_debt", "gross_profit", "revenue"}
+    optional = ["current_assets", "current_liabilities", "shares_outstanding"]
+
+    missing_required = required - existing
+    if missing_required:
+        logger.warning(
+            f"xbrl_facts missing required columns for Piotroski: {sorted(missing_required)} "
+            "— returning empty F-Score frame"
+        )
+        return pd.DataFrame(columns=["ticker", "quarter_end", "piotroski_f"])
+
+    missing_optional = [c for c in optional if c not in existing]
+    if missing_optional:
+        logger.warning(
+            f"xbrl_facts missing optional Piotroski columns: {missing_optional} "
+            "— F6/F7 will be 0 until schema is extended and EDGAR re-ingested"
+        )
+
+    select_cols = [
+        "ticker", "end_date",
+        "net_income", "total_assets", "operating_cf",
+        "long_term_debt", "gross_profit", "revenue",
+    ]
+    for col in optional:
+        select_cols.append(col if col in existing else f"NULL AS {col}")
+
+    clause, params = _ticker_where(tickers)
+    where = f"WHERE {clause}" if clause else ""
+    sql = (
+        f"SELECT {', '.join(select_cols)} FROM xbrl_facts "
+        f"{where} ORDER BY ticker, end_date"
+    )
+
+    try:
+        with engine.connect() as conn:
+            facts = pd.read_sql_query(text(sql), conn, params=params)
+    except Exception as e:
+        logger.warning(f"Piotroski SQL load failed: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "piotroski_f"])
+
+    if facts.empty:
+        logger.warning("xbrl_facts returned no rows for Piotroski computation")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "piotroski_f"])
+
+    facts["end_date"] = pd.to_datetime(facts["end_date"])
+
+    # Collapse to one row per (ticker, quarter_end) — last filing within quarter wins,
+    # matching the convention used by _to_quarterly().
+    raw_inputs = [
+        "net_income", "total_assets", "operating_cf", "long_term_debt",
+        "gross_profit", "revenue", "current_assets", "current_liabilities",
+        "shares_outstanding",
+    ]
+    qe_facts = _to_quarterly(facts, "end_date", raw_inputs)
+    qe_facts = qe_facts.sort_values(["ticker", "quarter_end"]).reset_index(drop=True)
+
+    # ── Derived ratios at quarter T ───────────────────────────────────────
+    def _safe_div(num: pd.Series, den: pd.Series) -> pd.Series:
+        return num / den.replace(0, np.nan)
+
+    qe_facts["roa"]             = _safe_div(qe_facts["net_income"],     qe_facts["total_assets"])
+    qe_facts["leverage"]        = _safe_div(qe_facts["long_term_debt"], qe_facts["total_assets"])
+    qe_facts["gross_margin"]    = _safe_div(qe_facts["gross_profit"],   qe_facts["revenue"])
+    qe_facts["asset_turnover"]  = _safe_div(qe_facts["revenue"],        qe_facts["total_assets"])
+    qe_facts["current_ratio"]   = _safe_div(qe_facts["current_assets"], qe_facts["current_liabilities"])
+    qe_facts["cfo_over_assets"] = _safe_div(qe_facts["operating_cf"],   qe_facts["total_assets"])
+
+    # ── YoY (4-quarter) lags per ticker ───────────────────────────────────
+    lag_cols = ["roa", "leverage", "gross_margin", "asset_turnover",
+                "current_ratio", "shares_outstanding"]
+    grouped = qe_facts.groupby("ticker", sort=False)
+    for c in lag_cols:
+        qe_facts[f"{c}_lag4"] = grouped[c].shift(4)
+
+    # ── 9 binary signals ──────────────────────────────────────────────────
+    # NaN comparisons evaluate to False (numpy semantics) → failed signal = 0,
+    # matching requirement #4: missing input deterministically fails its signal.
+    def _signal(cond: pd.Series) -> pd.Series:
+        return cond.fillna(False).astype(int)
+
+    f1 = _signal(qe_facts["roa"] > 0)
+    f2 = _signal(qe_facts["operating_cf"] > 0)
+    f3 = _signal(qe_facts["roa"] > qe_facts["roa_lag4"])
+    f4 = _signal((qe_facts["cfo_over_assets"] - qe_facts["roa"]) < 0)
+    f5 = _signal(qe_facts["leverage"] < qe_facts["leverage_lag4"])
+    f6 = _signal(qe_facts["current_ratio"] > qe_facts["current_ratio_lag4"])
+    f7 = _signal(qe_facts["shares_outstanding"] <= qe_facts["shares_outstanding_lag4"])
+    f8 = _signal(qe_facts["gross_margin"] > qe_facts["gross_margin_lag4"])
+    f9 = _signal(qe_facts["asset_turnover"] > qe_facts["asset_turnover_lag4"])
+
+    qe_facts["piotroski_f"] = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9
+
+    # ── If every raw input is NULL, surface that as NaN (per requirement #4) ─
+    all_null = qe_facts[raw_inputs].isna().all(axis=1)
+    qe_facts.loc[all_null, "piotroski_f"] = np.nan
+
+    out = qe_facts[["ticker", "quarter_end", "piotroski_f"]].copy()
+
+    # ── Window filter (applied AFTER YoY so the lag-4 lookback has history) ─
+    if start is not None:
+        out = out[out["quarter_end"] >= pd.Timestamp(start)]
+    if end is not None:
+        out = out[out["quarter_end"] <= pd.Timestamp(end)]
+
+    n_total = len(out)
+    n_valid = int(out["piotroski_f"].notna().sum())
+    if n_total:
+        logger.info(
+            f"Piotroski F-Score: {n_valid}/{n_total} rows, "
+            f"mean={out['piotroski_f'].mean():.2f}, "
+            f"tickers={out['ticker'].nunique()}"
+        )
+    else:
+        logger.warning("Piotroski F-Score: no rows in requested window")
+
+    return out.reset_index(drop=True)
+
+
 # ── cross-sectional z-scoring ─────────────────────────────────────────────────
 
 def _zscore_cross_section(df: pd.DataFrame) -> pd.DataFrame:
@@ -378,10 +560,15 @@ def build_feature_matrix(
         se_qe.columns = ["quarter_end", "ticker", "finbert_score"]
         qe_sent = se_qe
 
+    # 7b. Piotroski F-Score (already aligned to quarter_end internally)
+    qe_pio = compute_piotroski_f(
+        tickers=tickers, start=start, end=end, engine=engine,
+    )
+
     # 8. Merge everything on (ticker, quarter_end)
     base_qe = _quarter_end_index(start, end)
     all_tickers = set()
-    for frame in [qe_derived, qe_fcf, qe_sue, qe_rev, qe_si, qe_sent]:
+    for frame in [qe_derived, qe_fcf, qe_sue, qe_rev, qe_si, qe_sent, qe_pio]:
         if isinstance(frame, pd.DataFrame) and not frame.empty and "ticker" in frame.columns:
             all_tickers.update(frame["ticker"].unique())
     if tickers:
@@ -408,6 +595,7 @@ def build_feature_matrix(
     matrix = _merge(matrix, qe_rev)
     matrix = _merge(matrix, qe_si)
     matrix = _merge(matrix, qe_sent)
+    matrix = _merge(matrix, qe_pio)
 
     # 9. Missing-data handling
     #  a. Forward-fill up to 2 quarters per ticker for fundamental cols

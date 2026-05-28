@@ -108,3 +108,29 @@ rag:
   chroma_db_dir: "data/chroma_db"
   research_papers_dir: "research_papers"
   research_wiki_dir: "research_wiki"
+
+# ── Fundamental Factors (Phase 2) ─────────────────────────────
+fundamental_factors:
+  # Composite-score weights — must sum to 1.0
+  # Baseline (pre-Piotroski) sums to 1.00; Piotroski 0.10 was sourced
+  # proportionally from the top-4 weights (each reduced by 0.025).
+  weights:
+    gross_profitability:     0.175
+    fcf_yield:               0.175
+    revenue_acceleration:    0.125
+    earnings_surprise:       0.175
+    eps_revision_momentum:   0.10
+    deferred_revenue_growth: 0.05
+    rd_intensity_trend:      0.05
+    finbert_sentiment:       0.05
+    piotroski_f_score:       0.10   # NEW — Piotroski (2000) F-Score
+  # Portfolio construction (mirrors hard-coded defaults in fundamental_scorer.py)
+  rebalance_freq: "quarterly"
+  long_only: true
+  top_n: 20
+  min_score_threshold: 0.0
+  # FinBERT sentiment sub-config (consumed by sentiment_pipeline.py)
+  finbert_sentiment:
+    model: "ProsusAI/finbert"
+    max_tokens: 512
+    filing_types: ["8-K"]
