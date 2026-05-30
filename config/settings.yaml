@@ -115,12 +115,15 @@ fundamental_factors:
   # Session 1 added Piotroski 0.10, sourced from top-4 (each −0.025).
   # Session 2 added QMJ Safety 0.075 + QMJ Payout 0.05 (total 0.125), sourced
   # from top-4: gross_profitability/fcf_yield/earnings_surprise each −0.035,
-  # revenue_acceleration −0.020.  Verified sum = 1.000.
+  # revenue_acceleration −0.020.
+  # Session 3 added LM sentiment 0.05, sourced from top-4: gross_profitability/
+  # fcf_yield/earnings_surprise each −0.015, revenue_acceleration −0.005.
+  # Sum verified programmatically = 1.000.
   weights:
-    gross_profitability:     0.140
-    fcf_yield:               0.140
-    revenue_acceleration:    0.105
-    earnings_surprise:       0.140
+    gross_profitability:     0.125
+    fcf_yield:               0.125
+    revenue_acceleration:    0.100
+    earnings_surprise:       0.125
     eps_revision_momentum:   0.10
     deferred_revenue_growth: 0.05
     rd_intensity_trend:      0.05
@@ -128,6 +131,7 @@ fundamental_factors:
     piotroski_f_score:       0.10   # Session 1 — Piotroski (2000) F-Score
     qmj_safety:              0.075  # Session 2 — Asness/Frazzini/Pedersen (2019) Safety
     qmj_payout:              0.05   # Session 2 — Asness/Frazzini/Pedersen (2019) Payout
+    lm_sentiment_score:      0.05   # Session 3 — Loughran & McDonald (2011) LM 10-K sentiment
   # Portfolio construction (mirrors hard-coded defaults in fundamental_scorer.py)
   rebalance_freq: "quarterly"
   long_only: true
@@ -138,3 +142,9 @@ fundamental_factors:
     model: "ProsusAI/finbert"
     max_tokens: 512
     filing_types: ["8-K"]
+  # Loughran-McDonald LM 10-K sentiment sub-config (consumed by sentiment_pipeline.py)
+  lm_sentiment:
+    word_list_path: "data/lm_word_list.csv"   # download from sraf.nd.edu
+    filing_types: ["10-K"]
+    score_column: "lm_sentiment_score"
+    min_words: 500

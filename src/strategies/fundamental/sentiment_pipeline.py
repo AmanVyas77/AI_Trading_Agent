@@ -108,13 +108,16 @@ def _fetch_submissions(cik: str) -> dict:
     return resp.json()
 
 
-def _collect_8k_filings(
+def _collect_filings(
     submissions: dict,
+    form_types: list[str],
     date_start: str = DATE_START,
     date_end: str = DATE_END,
 ) -> list[dict]:
     """
-    Extract 8-K filing metadata from the submissions JSON.
+    Extract filing metadata for the requested form_types from the SEC
+    submissions JSON. Form-agnostic — pass form_types=["8-K"] for FinBERT or
+    form_types=["10-K"] for Loughran-McDonald LM scoring.
 
     Returns a list of dicts with keys:
       accession_number, filing_date, primary_document, period_of_report
@@ -128,7 +131,7 @@ def _collect_8k_filings(
 
     filings = []
     for i, form in enumerate(forms):
-        if form not in FILING_TYPES:
+        if form not in form_types:
             continue
 
         filing_date = dates[i] if i < len(dates) else ""
@@ -572,8 +575,8 @@ def run_sentiment_pipeline(
             continue
         time.sleep(SEC_SLEEP)
 
-        # 2. Collect 8-K filings
-        filings = _collect_8k_filings(submissions)
+        # 2. Collect 8-K filings (FILING_TYPES from settings.yaml; defaults to ["8-K"])
+        filings = _collect_filings(submissions, form_types=FILING_TYPES)
         if not filings:
             logger.info(f"[{ticker_upper}] No 8-K filings found in date range")
             continue
@@ -637,6 +640,529 @@ def run_sentiment_pipeline(
         f"Pipeline complete: {total_scored} filings scored across "
         f"{len(tickers)} tickers ({total_filings} 8-K filings found total)"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Loughran-McDonald (LM) Sentiment — 10-K annual filings
+# Paper: Loughran & McDonald (2011), "When Is a Liability Not a Liability?"
+# FinBERT (8-K) and LM (10-K) are complementary: different filings, different
+# methodologies, different cadences — therefore separate storage tables.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Per-request gap honouring SEC EDGAR's ~10 req/s rate limit (0.10s minimum).
+LM_SEC_SLEEP = 0.11
+
+
+# ── 10-K Filing Collection ───────────────────────────────────────────────────
+
+def _create_edgar_10k_filings_table(engine) -> None:
+    """Create the raw 10-K text store if it doesn't exist."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS edgar_10k_filings (
+                ticker            TEXT NOT NULL,
+                filing_date       TEXT NOT NULL,
+                fiscal_year_end   TEXT,
+                accession_number  TEXT NOT NULL,
+                filing_text       TEXT,
+                PRIMARY KEY (ticker, accession_number)
+            )
+        """))
+
+
+def _upsert_10k_filing(
+    engine,
+    ticker: str,
+    filing_date: str,
+    fiscal_year_end: str,
+    accession_number: str,
+    filing_text: str,
+) -> None:
+    """Insert or replace a cleaned 10-K filing into edgar_10k_filings."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT OR REPLACE INTO edgar_10k_filings
+                    (ticker, filing_date, fiscal_year_end, accession_number, filing_text)
+                VALUES
+                    (:ticker, :filing_date, :fiscal_year_end, :accession_number, :filing_text)
+            """),
+            {
+                "ticker": ticker,
+                "filing_date": filing_date,
+                "fiscal_year_end": fiscal_year_end,
+                "accession_number": accession_number,
+                "filing_text": filing_text,
+            },
+        )
+
+
+def run_lm_collection_pipeline(
+    tickers: list[str],
+    start_year: int,
+    end_year: int,
+    engine,
+    cfg: dict,
+) -> None:
+    """
+    Download 10-K filings from SEC EDGAR for the given tickers and year range,
+    strip HTML, drop short filings, and upsert the cleaned text into the
+    edgar_10k_filings table. Scoring is a separate pass — see
+    run_lm_scoring_pipeline().
+
+    Parameters
+    ----------
+    tickers     : list of ticker strings
+    start_year  : inclusive starting calendar year (e.g. 2015)
+    end_year    : inclusive ending calendar year (e.g. 2024)
+    engine      : SQLAlchemy engine
+    cfg         : the fundamental_factors config dict (expects an
+                  "lm_sentiment" sub-block with "min_words")
+    """
+    lm_cfg = cfg.get("lm_sentiment", {})
+    min_words = lm_cfg.get("min_words", 500)
+    date_start = f"{start_year}-01-01"
+    date_end = f"{end_year}-12-31"
+
+    _create_edgar_10k_filings_table(engine)
+    cik_map = _get_cik_map()
+
+    total_collected = 0
+    total_skipped = 0
+    total_failed = 0
+
+    for idx, ticker in enumerate(tickers):
+        ticker_upper = ticker.upper()
+        cik = cik_map.get(ticker_upper)
+        if not cik:
+            logger.warning(f"[{ticker_upper}] CIK not found — skipping")
+            continue
+
+        logger.info(
+            f"[{idx + 1}/{len(tickers)}] {ticker_upper} (CIK {cik}) "
+            f"— collecting 10-K filings {start_year}-{end_year}"
+        )
+
+        # 1. Fetch the submissions index
+        try:
+            submissions = _fetch_submissions(cik)
+        except Exception as e:
+            logger.warning(f"[{ticker_upper}] Failed to fetch submissions: {e}")
+            time.sleep(LM_SEC_SLEEP)
+            continue
+        time.sleep(LM_SEC_SLEEP)
+
+        # 2. Collect 10-K filing metadata for the requested window
+        filings = _collect_filings(
+            submissions, form_types=["10-K"],
+            date_start=date_start, date_end=date_end,
+        )
+        if not filings:
+            logger.info(
+                f"[{ticker_upper}] No 10-K filings found in {start_year}-{end_year}"
+            )
+            continue
+
+        logger.info(f"[{ticker_upper}] Found {len(filings)} 10-K filings")
+
+        # 3. Download text, clean HTML, skip if too short, upsert
+        for filing in filings:
+            raw_text = _download_filing_text(
+                cik, filing["accession_number"], filing["primary_document"]
+            )
+            time.sleep(LM_SEC_SLEEP)
+
+            if not raw_text:
+                logger.debug(
+                    f"[{ticker_upper}] Could not download filing "
+                    f"{filing['filing_date']}"
+                )
+                total_failed += 1
+                continue
+
+            cleaned = clean_filing_text(raw_text)
+            word_count = len(cleaned.split())
+            if word_count < min_words:
+                logger.debug(
+                    f"[{ticker_upper}] Filing {filing['filing_date']} too short "
+                    f"({word_count} words < {min_words}) — skipping"
+                )
+                total_skipped += 1
+                continue
+
+            _upsert_10k_filing(
+                engine=engine,
+                ticker=ticker_upper,
+                filing_date=filing["filing_date"],
+                fiscal_year_end=filing["period_of_report"],
+                accession_number=filing["accession_number"],
+                filing_text=cleaned,
+            )
+            total_collected += 1
+            logger.debug(
+                f"[{ticker_upper}] {filing['filing_date']} stored "
+                f"({word_count} words)"
+            )
+
+    logger.info(
+        f"10-K collection complete: {total_collected} stored, "
+        f"{total_skipped} skipped (too short), {total_failed} download failures"
+    )
+
+
+# ── LM Scoring (Loughran-McDonald 2011 dictionary) ───────────────────────────
+
+def lm_sentiment(
+    text: str,
+    word_set_negative: set,
+    word_set_positive: set,
+    word_set_uncertainty: set,
+    word_set_litigious: set,
+) -> dict:
+    """
+    Apply the Loughran-McDonald master dictionary to a single piece of text.
+
+    Tokenisation:
+        re.findall(r"[a-zA-Z']+", text.upper())
+    Uppercase-only matching matches the LM dictionary convention.
+
+    Returns
+    -------
+    {
+        "lm_net_score":      (positive_count - negative_count) / max(total_words, 1),
+        "negative_count":    int,
+        "positive_count":    int,
+        "uncertainty_count": int,
+        "litigious_count":   int,
+        "total_words":       int,
+    }
+    """
+    tokens = re.findall(r"[a-zA-Z']+", text.upper())
+    total_words = len(tokens)
+
+    negative_count = sum(1 for t in tokens if t in word_set_negative)
+    positive_count = sum(1 for t in tokens if t in word_set_positive)
+    uncertainty_count = sum(1 for t in tokens if t in word_set_uncertainty)
+    litigious_count = sum(1 for t in tokens if t in word_set_litigious)
+
+    lm_net_score = (positive_count - negative_count) / max(total_words, 1)
+
+    return {
+        "lm_net_score": lm_net_score,
+        "negative_count": negative_count,
+        "positive_count": positive_count,
+        "uncertainty_count": uncertainty_count,
+        "litigious_count": litigious_count,
+        "total_words": total_words,
+    }
+
+
+def load_lm_word_sets(word_list_path: str) -> tuple[set, set, set, set]:
+    """
+    Load the Loughran-McDonald master dictionary CSV.
+
+    Expected columns: 'Word', 'Negative', 'Positive', 'Uncertainty', 'Litigious'.
+    A word belongs to a category when the corresponding column value > 0
+    (the LM dictionary stores annual frequencies).
+
+    Returns (negative_set, positive_set, uncertainty_set, litigious_set), each
+    a set of UPPERCASE strings.  Graceful degradation:
+      - If the CSV is missing, try the pysentiment2 package as a fallback.
+      - If both routes fail, log a warning and return four empty sets — LM
+        scoring will then produce zeros, and run_lm_scoring_pipeline will
+        abort before writing rows.
+    """
+    path = Path(word_list_path)
+    if path.exists():
+        try:
+            df = pd.read_csv(path)
+        except Exception as e:
+            logger.warning(f"Failed to read LM CSV {word_list_path}: {e}")
+            return set(), set(), set(), set()
+
+        if "Word" not in df.columns:
+            logger.warning(
+                f"LM CSV missing required 'Word' column; got "
+                f"{df.columns.tolist()[:6]}"
+            )
+            return set(), set(), set(), set()
+
+        def _category_set(col: str) -> set:
+            if col not in df.columns:
+                logger.warning(f"LM CSV missing '{col}' column")
+                return set()
+            mask = pd.to_numeric(df[col], errors="coerce").fillna(0) > 0
+            return set(df.loc[mask, "Word"].astype(str).str.upper())
+
+        neg = _category_set("Negative")
+        pos = _category_set("Positive")
+        unc = _category_set("Uncertainty")
+        lit = _category_set("Litigious")
+
+        logger.info(
+            f"Loaded LM dictionary from {word_list_path} "
+            f"(neg={len(neg)}, pos={len(pos)}, unc={len(unc)}, lit={len(lit)})"
+        )
+        return neg, pos, unc, lit
+
+    # File missing — try pysentiment2 fallback
+    logger.warning(
+        f"LM word list not found at {word_list_path}; "
+        "trying pysentiment2 fallback"
+    )
+    try:
+        import pysentiment2 as ps
+        lm = ps.LM()
+        # pysentiment2 stores the dictionary as a dict-of-sets keyed by category.
+        neg = {w.upper() for w in lm.dict.get("Negative", [])}
+        pos = {w.upper() for w in lm.dict.get("Positive", [])}
+        unc = {w.upper() for w in lm.dict.get("Uncertainty", [])}
+        lit = {w.upper() for w in lm.dict.get("Litigious", [])}
+        logger.info(
+            f"Loaded LM dictionary via pysentiment2 "
+            f"(neg={len(neg)}, pos={len(pos)}, unc={len(unc)}, lit={len(lit)})"
+        )
+        return neg, pos, unc, lit
+    except ImportError:
+        logger.warning(
+            "pysentiment2 not installed; LM scoring will produce zeros "
+            "until either the LM CSV is placed at the expected path or "
+            "pysentiment2 is installed (pip install pysentiment2)"
+        )
+        return set(), set(), set(), set()
+    except Exception as e:
+        logger.warning(f"pysentiment2 fallback failed: {e}; returning empty sets")
+        return set(), set(), set(), set()
+
+
+def _create_lm_sentiment_scores_table(engine) -> None:
+    """Create the LM scores output table if it doesn't exist."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS lm_sentiment_scores (
+                ticker             TEXT    NOT NULL,
+                filing_date        TEXT    NOT NULL,
+                fiscal_year_end    TEXT,
+                negative_count     INTEGER,
+                positive_count     INTEGER,
+                uncertainty_count  INTEGER,
+                litigious_count    INTEGER,
+                total_words        INTEGER,
+                lm_net_score       REAL,
+                PRIMARY KEY (ticker, filing_date)
+            )
+        """))
+
+
+def _upsert_lm_score(
+    engine,
+    ticker: str,
+    filing_date: str,
+    fiscal_year_end: str,
+    scores: dict,
+) -> None:
+    """Insert or replace a single LM sentiment score row."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT OR REPLACE INTO lm_sentiment_scores
+                    (ticker, filing_date, fiscal_year_end,
+                     negative_count, positive_count, uncertainty_count,
+                     litigious_count, total_words, lm_net_score)
+                VALUES
+                    (:ticker, :filing_date, :fiscal_year_end,
+                     :negative_count, :positive_count, :uncertainty_count,
+                     :litigious_count, :total_words, :lm_net_score)
+            """),
+            {
+                "ticker": ticker,
+                "filing_date": filing_date,
+                "fiscal_year_end": fiscal_year_end,
+                "negative_count": int(scores["negative_count"]),
+                "positive_count": int(scores["positive_count"]),
+                "uncertainty_count": int(scores["uncertainty_count"]),
+                "litigious_count": int(scores["litigious_count"]),
+                "total_words": int(scores["total_words"]),
+                "lm_net_score": float(scores["lm_net_score"]),
+            },
+        )
+
+
+def run_lm_scoring_pipeline(engine, cfg: dict) -> None:
+    """
+    Score every 10-K filing in edgar_10k_filings that has not already been
+    written to lm_sentiment_scores, using the Loughran-McDonald master
+    dictionary loaded from the path under cfg["lm_sentiment"]["word_list_path"].
+
+    Parameters
+    ----------
+    engine : SQLAlchemy engine
+    cfg    : the fundamental_factors config dict (expects an "lm_sentiment"
+             sub-block with "word_list_path")
+    """
+    lm_cfg = cfg.get("lm_sentiment", {})
+    word_list_path = lm_cfg.get(
+        "word_list_path", "data/raw/lm_master_dictionary.csv"
+    )
+
+    # Resolve relative paths against the project root
+    word_list_full = Path(word_list_path)
+    if not word_list_full.is_absolute():
+        word_list_full = ROOT / word_list_full
+
+    neg, pos, unc, lit = load_lm_word_sets(str(word_list_full))
+    if not (neg or pos or unc or lit):
+        logger.warning(
+            "All LM word sets are empty — scoring would produce zeros. "
+            "Aborting before writing rows; resolve the dictionary first."
+        )
+        return
+
+    _create_lm_sentiment_scores_table(engine)
+
+    # Find 10-K filings in edgar_10k_filings that are NOT yet in lm_sentiment_scores.
+    # Join on (ticker, filing_date) because that's the PK on the scores table.
+    sql = """
+        SELECT f.ticker, f.filing_date, f.fiscal_year_end, f.filing_text
+        FROM edgar_10k_filings f
+        LEFT JOIN lm_sentiment_scores s
+            ON f.ticker = s.ticker AND f.filing_date = s.filing_date
+        WHERE s.ticker IS NULL
+        ORDER BY f.ticker, f.filing_date
+    """
+    with engine.connect() as conn:
+        unprocessed = pd.read_sql_query(text(sql), conn)
+
+    if unprocessed.empty:
+        logger.info(
+            "No unscored 10-K filings in edgar_10k_filings — nothing to do"
+        )
+        return
+
+    logger.info(
+        f"Scoring {len(unprocessed)} 10-K filings with LM dictionary"
+    )
+
+    total_scored = 0
+    total_failed = 0
+    for _, row in unprocessed.iterrows():
+        try:
+            scores = lm_sentiment(
+                row["filing_text"] or "", neg, pos, unc, lit
+            )
+            _upsert_lm_score(
+                engine=engine,
+                ticker=row["ticker"],
+                filing_date=row["filing_date"],
+                fiscal_year_end=row["fiscal_year_end"],
+                scores=scores,
+            )
+            total_scored += 1
+            logger.debug(
+                f"[{row['ticker']}] {row['filing_date']} "
+                f"lm_net_score={scores['lm_net_score']:+.5f} "
+                f"(neg={scores['negative_count']}, "
+                f"pos={scores['positive_count']}, "
+                f"total={scores['total_words']})"
+            )
+        except Exception as e:
+            total_failed += 1
+            logger.warning(
+                f"[{row['ticker']}] {row['filing_date']} LM scoring failed: {e}"
+            )
+
+    logger.info(
+        f"LM scoring complete: {total_scored} scored, {total_failed} failed"
+    )
+
+
+# ── LM Score Loader (for xbrl_features.build_feature_matrix integration) ────
+
+def load_lm_scores(
+    tickers: Optional[list[str]] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    engine=None,
+) -> pd.DataFrame:
+    """
+    Load LM sentiment scores aligned to quarter-end dates so they can be
+    merged into xbrl_features.build_feature_matrix() the same way the
+    FinBERT scores are.
+
+    fiscal_year_end is rounded to its containing calendar-quarter-end using
+        pd.to_datetime(fiscal_year_end).dt.to_period("Q").dt.end_time.dt.normalize()
+    so e.g. a 2023-09-30 fiscal year-end maps to 2023-09-30 (Q3) and a
+    2024-01-31 fiscal year-end maps to 2024-03-31 (Q1).
+
+    Returns
+    -------
+    pd.DataFrame with columns [ticker, quarter_end, lm_sentiment_score]
+    (lm_net_score from the DB is renamed to lm_sentiment_score for
+    consistency with the FEATURE_COLS naming convention).
+
+    Empty DataFrame returned (with the right columns) if the table does
+    not exist yet, so callers can merge unconditionally.
+    """
+    if engine is None:
+        engine = _get_engine()
+
+    # Verify the table exists before querying — table may not have been
+    # created yet if no LM scoring run has happened.
+    try:
+        with engine.connect() as conn:
+            present = conn.execute(text(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='lm_sentiment_scores'"
+            )).fetchall()
+        if not present:
+            logger.info(
+                "lm_sentiment_scores table does not exist yet — "
+                "returning empty frame"
+            )
+            return pd.DataFrame(
+                columns=["ticker", "quarter_end", "lm_sentiment_score"]
+            )
+    except Exception as e:
+        logger.warning(f"Could not check lm_sentiment_scores existence: {e}")
+        return pd.DataFrame(
+            columns=["ticker", "quarter_end", "lm_sentiment_score"]
+        )
+
+    where_clauses: list[str] = []
+    params: dict = {}
+    if tickers:
+        placeholders = ",".join(f":t{i}" for i in range(len(tickers)))
+        where_clauses.append(f"ticker IN ({placeholders})")
+        params.update({f"t{i}": t for i, t in enumerate(tickers)})
+    if start:
+        where_clauses.append("filing_date >= :start")
+        params["start"] = start
+    if end:
+        where_clauses.append("filing_date <= :end")
+        params["end"] = end
+    where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    sql = f"""
+        SELECT ticker, filing_date, fiscal_year_end, lm_net_score
+        FROM lm_sentiment_scores
+        {where}
+        ORDER BY ticker, filing_date
+    """
+    with engine.connect() as conn:
+        df = pd.read_sql_query(text(sql), conn, params=params)
+
+    if df.empty:
+        return pd.DataFrame(
+            columns=["ticker", "quarter_end", "lm_sentiment_score"]
+        )
+
+    # Round fiscal_year_end to its containing quarter-end.
+    df["quarter_end"] = (
+        pd.to_datetime(df["fiscal_year_end"])
+          .dt.to_period("Q").dt.end_time.dt.normalize()
+    )
+    df = df.rename(columns={"lm_net_score": "lm_sentiment_score"})
+    return df[["ticker", "quarter_end", "lm_sentiment_score"]].reset_index(drop=True)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

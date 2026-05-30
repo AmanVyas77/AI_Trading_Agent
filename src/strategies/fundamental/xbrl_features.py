@@ -34,6 +34,9 @@ import yaml
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
+# Session 3 — pull LM 10-K sentiment scores into the feature matrix
+from src.strategies.fundamental.sentiment_pipeline import load_lm_scores
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,7 @@ FEATURE_COLS = [
     "piotroski_f",
     "qmj_safety",
     "qmj_payout",
+    "lm_sentiment_score",
 ]
 
 # Maximum forward-fill horizon for fundamental data (2 quarters ≈ 180 days)
@@ -895,11 +899,16 @@ def build_feature_matrix(
         tickers=tickers, start=start, end=end, engine=engine,
     )
 
+    # 7e. Loughran-McDonald LM sentiment from 10-K annual filings
+    qe_lm = load_lm_scores(
+        tickers=tickers, start=start, end=end, engine=engine,
+    )
+
     # 8. Merge everything on (ticker, quarter_end)
     base_qe = _quarter_end_index(start, end)
     all_tickers = set()
     for frame in [qe_derived, qe_fcf, qe_sue, qe_rev, qe_si, qe_sent,
-                  qe_pio, qe_qmj_safety, qe_qmj_payout]:
+                  qe_pio, qe_qmj_safety, qe_qmj_payout, qe_lm]:
         if isinstance(frame, pd.DataFrame) and not frame.empty and "ticker" in frame.columns:
             all_tickers.update(frame["ticker"].unique())
     if tickers:
@@ -929,6 +938,7 @@ def build_feature_matrix(
     matrix = _merge(matrix, qe_pio)
     matrix = _merge(matrix, qe_qmj_safety)
     matrix = _merge(matrix, qe_qmj_payout)
+    matrix = _merge(matrix, qe_lm)
 
     # 9. Missing-data handling
     #  a. Forward-fill up to 2 quarters per ticker for fundamental cols

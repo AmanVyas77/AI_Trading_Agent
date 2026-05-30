@@ -117,6 +117,23 @@ XBRL_TAGS = {
         "CapitalExpendituresIncurredButNotYetPaid",
         "PaymentsForProceedsFromProductiveAssets",
     ],
+    # Session 3 additions — unblock Piotroski F6/F7 and QMJ Payout sub-signals.
+    "current_assets":      ["AssetsCurrent"],
+    "current_liabilities": ["LiabilitiesCurrent"],
+    "shares_outstanding": [
+        "EntityCommonStockSharesOutstanding",        # dei: namespace — most reliable
+        "CommonStockSharesOutstanding",              # us-gaap fallback
+        "WeightedAverageNumberOfSharesOutstandingBasic",  # period-average fallback
+    ],
+    "dividends_paid": [
+        "PaymentsOfDividends",
+        "PaymentsOfDividendsCommonStock",
+    ],
+    "share_repurchases": [
+        "PaymentsForRepurchaseOfCommonStock",
+        "StockRepurchasedDuringPeriodValue",
+        "TreasuryStockValueAcquiredCostMethod",
+    ],
 }
 
 
@@ -158,14 +175,25 @@ def extract_tag_series(facts: dict, tags: list[str]) -> pd.DataFrame:
     """
     Extract a time series for a list of possible XBRL tags.
     Returns the first tag found with data, preferring quarterly (10-Q) filings.
+
+    Looks up each tag first in the us-gaap namespace, then falls back to the
+    dei namespace. dei is required for `EntityCommonStockSharesOutstanding`
+    (Document and Entity Information cover-page facts).
     """
-    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    facts_root = facts.get("facts", {})
 
     for tag in tags:
-        if tag not in us_gaap:
+        # Look up tag in us-gaap first, then dei as fallback.
+        tag_facts = None
+        for namespace in ("us-gaap", "dei"):
+            facts_ns = facts_root.get(namespace, {})
+            if tag in facts_ns:
+                tag_facts = facts_ns[tag]
+                break
+        if tag_facts is None:
             continue
 
-        units = us_gaap[tag].get("units", {})
+        units = tag_facts.get("units", {})
         # Prefer USD units; some tags use shares or pure numbers
         unit_data = units.get("USD") or units.get("shares") or next(iter(units.values()), [])
 
@@ -273,6 +301,22 @@ def _create_tables(engine):
             )
         """))
 
+    # Session 3 schema extension: add 5 new columns to xbrl_facts on an
+    # existing DB (Path A — preserve data). PRAGMA guard makes it idempotent.
+    new_cols = [
+        ("current_assets",      "REAL"),
+        ("current_liabilities", "REAL"),
+        ("shares_outstanding",  "REAL"),
+        ("dividends_paid",      "REAL"),
+        ("share_repurchases",   "REAL"),
+    ]
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(xbrl_facts)"))}
+        for col_name, col_type in new_cols:
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE xbrl_facts ADD COLUMN {col_name} {col_type}"))
+        conn.commit()
+
 
 def upsert_facts(df: pd.DataFrame, engine) -> None:
     cols = [
@@ -280,8 +324,22 @@ def upsert_facts(df: pd.DataFrame, engine) -> None:
         "operating_income", "net_income", "eps_diluted", "total_assets",
         "total_liabilities", "stockholders_equity", "deferred_revenue",
         "cash", "long_term_debt", "operating_cf", "capex",
+        # Session 3 additions
+        "current_assets", "current_liabilities", "shares_outstanding",
+        "dividends_paid", "share_repurchases",
     ]
     df = df.rename(columns={"end_date": "end_date"})
+
+    # Sign normalization: SEC reports dividends and buybacks as cash outflows
+    # (negative values on the CF statement). Store as positive magnitudes so
+    # downstream QMJ Payout math doesn't have to know about the sign convention.
+    # Apply BEFORE the "fill missing cols with None" loop so we only touch
+    # columns that actually carry numeric data.
+    if "dividends_paid" in df.columns:
+        df["dividends_paid"] = pd.to_numeric(df["dividends_paid"], errors="coerce").abs()
+    if "share_repurchases" in df.columns:
+        df["share_repurchases"] = pd.to_numeric(df["share_repurchases"], errors="coerce").abs()
+
     for col in cols:
         if col not in df.columns:
             df[col] = None
@@ -298,12 +356,16 @@ def upsert_facts(df: pd.DataFrame, engine) -> None:
                     (ticker, end_date, revenue, gross_profit, rd_expense,
                      operating_income, net_income, eps_diluted, total_assets,
                      total_liabilities, stockholders_equity, deferred_revenue,
-                     cash, long_term_debt, operating_cf, capex)
+                     cash, long_term_debt, operating_cf, capex,
+                     current_assets, current_liabilities, shares_outstanding,
+                     dividends_paid, share_repurchases)
                 VALUES
                     (:ticker, :end_date, :revenue, :gross_profit, :rd_expense,
                      :operating_income, :net_income, :eps_diluted, :total_assets,
                      :total_liabilities, :stockholders_equity, :deferred_revenue,
-                     :cash, :long_term_debt, :operating_cf, :capex)
+                     :cash, :long_term_debt, :operating_cf, :capex,
+                     :current_assets, :current_liabilities, :shares_outstanding,
+                     :dividends_paid, :share_repurchases)
             """), row.to_dict())
 
 
