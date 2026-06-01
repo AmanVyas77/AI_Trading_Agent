@@ -297,17 +297,24 @@ def build_labeled_dataset(engine=None) -> pd.DataFrame:
 def walk_forward_folds(
     df: pd.DataFrame,
     min_train_months: int = MIN_TRAIN_MONTHS,
+    purge_months: int = 0,
 ) -> Iterator[tuple[pd.DataFrame, pd.DataFrame]]:
     """
-    Generate walk-forward train/test splits.
+    Generate walk-forward train/test splits (anchored expanding window).
 
-    Each fold uses all data up to month T as training, and month T+1 as
-    the test set. No data leakage — strictly temporal.
+    Each fold uses all data up to (and including) ``train_end`` as training,
+    and the month at index ``i`` as the test set.  With ``purge_months > 0``,
+    an embargo period is held out between ``train_end`` and the test month
+    to prevent the early-stopping eval set from peeking at labels whose
+    1-month forward return overlaps the test period.
 
     Parameters
     ----------
     df               : labeled dataset (must have 'date' column, sorted by date)
     min_train_months : minimum number of months in the training window
+    purge_months     : number of months to embargo between train_end and
+                       test_month.  Default 0 preserves existing behavior.
+                       AlgoXpert WFA spec recommends purge_months=3 (1 quarter).
 
     Yields
     ------
@@ -316,21 +323,24 @@ def walk_forward_folds(
     df = df.sort_values("date")
     unique_months = sorted(df["date"].unique())
 
-    if len(unique_months) <= min_train_months:
+    if len(unique_months) <= min_train_months + purge_months:
         logger.warning(
             f"Only {len(unique_months)} months available, "
-            f"need >{min_train_months} for walk-forward. No folds generated."
+            f"need >{min_train_months + purge_months} "
+            f"(min_train_months={min_train_months} + purge_months={purge_months}) "
+            f"for walk-forward. No folds generated."
         )
         return
 
+    n_folds = len(unique_months) - min_train_months - purge_months
     logger.info(
         f"Walk-forward: {len(unique_months)} months total, "
-        f"{min_train_months} month burn-in → "
-        f"{len(unique_months) - min_train_months} folds"
+        f"{min_train_months} month burn-in + {purge_months} month purge → "
+        f"{n_folds} folds"
     )
 
-    for i in range(min_train_months, len(unique_months)):
-        train_end = unique_months[i - 1]
+    for i in range(min_train_months + purge_months, len(unique_months)):
+        train_end = unique_months[i - 1 - purge_months]
         test_month = unique_months[i]
 
         train_df = df[df["date"] <= train_end]

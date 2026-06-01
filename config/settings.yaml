@@ -84,9 +84,13 @@ quant_factors:
 # ── ML Combiner (Phase 3) ─────────────────────────────────────
 ml:
   model: "xgboost"
-  cv_folds: 5
-  train_window_years: 3
-  retrain_freq: "quarterly"
+  cv_folds: 5                  # TODO: wire into code (not currently read; model_trainer uses early-stopping eval set instead)
+  train_window_years: 3        # TODO: wire into code (target_builder uses hardcoded MIN_TRAIN_MONTHS=36)
+  retrain_freq: "quarterly"    # TODO: wire into code (walk-forward retrains every fold, not on quarterly cadence)
+  # AlgoXpert Session 4 additions:
+  purge_months: 3              # embargo gap between train_end and test month
+  importance_threshold: 0.005  # features below this mean gain are flagged for dropping
+  dsr_threshold: 1.0           # deflated t-stat below this = likely noise
 
 # ── Backtest ─────────────────────────────────────────────────
 backtest:
