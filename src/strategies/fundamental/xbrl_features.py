@@ -247,7 +247,18 @@ def _compute_fcf_yield(facts: pd.DataFrame, prices_wide: pd.DataFrame) -> pd.Dat
     unavailable we fall back to:
         fcf_yield_proxy = gross_profit / total_assets   (Novy-Marx style)
 
-    The function returns a (ticker, quarter_end, fcf_yield) DataFrame.
+    The function returns a (ticker, quarter_end, fcf_yield) DataFrame with
+    exactly one row per (ticker, quarter_end) — matching the collapse every
+    sibling frame performs via ``_to_quarterly``.
+
+    Collapse rules (raw ``xbrl_facts`` can hold >1 row per calendar quarter):
+      1. Drop all-NaN cover-page / DEI rows — rows whose ``end_date`` is really
+         a filing/cover date (not a period boundary) and which carry no
+         financial data. They only produce spurious NaN fcf_yield rows.
+      2. For genuine collisions that remain (two real period-ends landing in
+         the same calendar quarter, e.g. restatements), keep the row with the
+         latest ``end_date`` — the most recent period boundary / most up-to-date
+         restatement wins. This is a deterministic tie-break, never an average.
     """
     if facts.empty:
         return pd.DataFrame(columns=["ticker", "quarter_end", "fcf_yield"])
@@ -255,6 +266,21 @@ def _compute_fcf_yield(facts: pd.DataFrame, prices_wide: pd.DataFrame) -> pd.Dat
     facts = facts.copy()
     facts["free_cash_flow"] = facts["operating_cf"] - facts["capex"].abs()
     facts["quarter_end"] = facts["end_date"].dt.to_period("Q").dt.to_timestamp("Q")
+
+    # ── Step 1: drop all-NaN cover-page rows ──────────────────────────────
+    # Financial fields loaded by _load_facts; intersect with what's present so
+    # this stays robust to schema changes.
+    fin_cols = [c for c in ["total_assets", "stockholders_equity", "cash",
+                            "long_term_debt", "operating_cf", "capex",
+                            "gross_profit"] if c in facts.columns]
+    if fin_cols:
+        facts = facts[~facts[fin_cols].isna().all(axis=1)].copy()
+
+    # ── Step 2: deterministic tie-break — keep latest end_date per key ─────
+    facts = (
+        facts.sort_values(["ticker", "quarter_end", "end_date"])
+             .drop_duplicates(subset=["ticker", "quarter_end"], keep="last")
+    )
 
     # Get quarter-end prices per ticker
     if not prices_wide.empty:
@@ -269,7 +295,11 @@ def _compute_fcf_yield(facts: pd.DataFrame, prices_wide: pd.DataFrame) -> pd.Dat
     # Fallback proxy: gross_profit / total_assets (Novy-Marx profitability)
     merged["fcf_yield"] = merged["gross_profit"] / merged["total_assets"].replace(0, np.nan)
 
-    return merged[["ticker", "quarter_end", "fcf_yield"]]
+    result = merged[["ticker", "quarter_end", "fcf_yield"]].reset_index(drop=True)
+    assert result.duplicated(subset=["ticker", "quarter_end"]).sum() == 0, (
+        "_compute_fcf_yield produced duplicate (ticker, quarter_end) keys"
+    )
+    return result
 
 
 # ── Piotroski F-Score (Piotroski 2000) ────────────────────────────────────────
@@ -950,16 +980,22 @@ def build_feature_matrix(
         .reset_index(drop=True)
     )
 
-    #  b. Log missing rates before filling with 0
+    #  b. Log missing rates (diagnostics)
     _log_missing_rates(matrix)
 
-    #  c. Fill remaining NaN with 0.0 (cross-sectional neutral)
-    for col in FEATURE_COLS:
-        if col not in matrix.columns:
-            matrix[col] = 0.0
-    matrix[FEATURE_COLS] = matrix[FEATURE_COLS].fillna(0.0)
+    #  c. Do NOT zero-fill remaining NaNs.
+    #  Values still missing after forward-fill are genuinely unavailable for
+    #  that (ticker, quarter). They are left as NaN so that:
+    #    - _zscore_cross_section computes each quarter's mean/std from real
+    #      observations only (zero-filling first biased the distribution), and
+    #    - compute_composite_scores() in fundamental_scorer.py can tell "truly
+    #      missing" apart from "real value that happens to be 0.0" and
+    #      redistribute that factor's weight across the available factors.
+    #  An entirely-absent feature column (e.g. finbert_score when the sentiment
+    #  table is empty) is materialised as all-NaN by _zscore_cross_section,
+    #  which routes it to the redistribution path as well.
 
-    # 10. Cross-sectional z-score
+    # 10. Cross-sectional z-score (NaN-preserving; NaN stays NaN)
     matrix = _zscore_cross_section(matrix)
 
     logger.info(

@@ -84,6 +84,7 @@ _WEIGHT_MAP: dict[str, tuple[str, float]] = {
     "piotroski_f_score":      ("piotroski_f",            FF_CFG["weights"]["piotroski_f_score"]),
     "qmj_safety":             ("qmj_safety",             FF_CFG["weights"]["qmj_safety"]),
     "qmj_payout":             ("qmj_payout",             FF_CFG["weights"]["qmj_payout"]),
+    "lm_sentiment_score":     ("lm_sentiment_score",     FF_CFG["weights"]["lm_sentiment_score"]),
 }
 
 # Portfolio construction params

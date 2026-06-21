@@ -1190,7 +1190,55 @@ def main():
         default=False,
         help="Force CPU inference (skip MPS / CUDA detection)",
     )
+    parser.add_argument(
+        "--lm",
+        action="store_true",
+        default=False,
+        help="Run the Loughran-McDonald 10-K pipeline (collection + scoring) "
+             "instead of the default FinBERT 8-K pipeline",
+    )
+    parser.add_argument(
+        "--start-year",
+        type=int,
+        default=None,
+        help="LM 10-K collection start year (--lm only; default: "
+             "timeline.train_start year from settings.yaml)",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=None,
+        help="LM 10-K collection end year (--lm only; default: current year)",
+    )
     args = parser.parse_args()
+
+    if args.lm:
+        from datetime import datetime
+
+        tickers = args.tickers
+        if tickers is None:
+            uni_path = ROOT / "data" / "universe" / "universe.csv"
+            if not uni_path.exists():
+                logger.error(
+                    f"Universe file not found: {uni_path}  "
+                    "Run screener first or pass --tickers explicitly."
+                )
+                return
+            tickers = pd.read_csv(uni_path)["ticker"].tolist()
+            logger.info(f"Loaded {len(tickers)} tickers from universe.csv")
+
+        start_year = args.start_year or int(str(CFG["timeline"]["train_start"])[:4])
+        end_year = args.end_year or datetime.now().year
+
+        engine = _get_engine()
+        ff_cfg = CFG["fundamental_factors"]
+
+        logger.info(f"Running LM 10-K collection: {start_year}-{end_year}")
+        run_lm_collection_pipeline(tickers, start_year, end_year, engine, ff_cfg)
+
+        logger.info("Running LM 10-K scoring")
+        run_lm_scoring_pipeline(engine, ff_cfg)
+        return
 
     run_sentiment_pipeline(tickers=args.tickers, cpu_only=args.cpu_only)
 
