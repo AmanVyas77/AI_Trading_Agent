@@ -35,6 +35,11 @@ import yaml
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, inspect
 
+from src.strategies.ensemble.regime_gate import (
+    get_historical_regime_multipliers,
+    NEUTRAL_MULT,
+)
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -275,6 +280,25 @@ def build_portfolio_weights(
 
     # Build daily weights
     daily_weights = _build_daily_weights(holdings, prices)
+
+    # ── Regime gate: scale weights by macro regime multiplier ────────────
+    if not daily_weights.empty:
+        monthly_mults = get_historical_regime_multipliers(
+            start_date=str(daily_weights.index.min().date()),
+            end_date=str(daily_weights.index.max().date()),
+        )
+        if not monthly_mults.empty:
+            daily_mults = monthly_mults.reindex(
+                daily_weights.index, method="ffill"
+            ).fillna(NEUTRAL_MULT)
+            daily_weights = daily_weights.multiply(daily_mults, axis=0)
+            logger.info(
+                f"Regime gate applied: {(daily_mults < 1.0).sum()} risk-off days, "
+                f"{(daily_mults > 1.0).sum()} risk-on days, "
+                f"{(daily_mults == 1.0).sum()} neutral days"
+            )
+        else:
+            logger.warning("Regime gate returned empty — weights unchanged")
 
     return daily_weights
 
