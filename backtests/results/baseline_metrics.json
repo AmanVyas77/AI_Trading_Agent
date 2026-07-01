@@ -1,0 +1,52 @@
+{
+  "generated_at": "2026-06-30T22:19:42.570148",
+  "git_commit": "b940869a7f6101ae1490ee223ed76ab9e12f608b",
+  "train_period": {
+    "start": "2018-07-02",
+    "end": "2022-12-30",
+    "metrics": {
+      "total_return_pct": 88.69,
+      "cagr_pct": 15.17,
+      "sharpe_ratio": 0.5775,
+      "sortino_ratio": 0.7575,
+      "max_drawdown_pct": -43.79,
+      "calmar_ratio": 0.3464
+    }
+  },
+  "test_period": {
+    "start": "2023-01-03",
+    "end": "2024-12-31",
+    "metrics": {
+      "total_return_pct": 29.42,
+      "cagr_pct": 13.81,
+      "sharpe_ratio": 0.7826,
+      "sortino_ratio": 0.9729,
+      "max_drawdown_pct": -15.57,
+      "calmar_ratio": 0.8875
+    }
+  },
+  "drawdown_2022": {
+    "max_drawdown_pct": -41.74
+  },
+  "feature_matrix": {
+    "shape": [
+      5938,
+      24
+    ],
+    "new_columns_added": [
+      "piotroski_f",
+      "qmj_safety",
+      "qmj_payout",
+      "finbert_score",
+      "lm_sentiment_score"
+    ],
+    "total_fund_cols": 13
+  },
+  "new_column_importances": {
+    "piotroski_f": 0.04119,
+    "qmj_safety": 0.036038,
+    "qmj_payout": 0.046191,
+    "finbert_score": 0.048003,
+    "lm_sentiment_score": 0.040389
+  }
+}

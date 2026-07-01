@@ -157,10 +157,9 @@ def _collect_filings(
 
 def _download_filing_text(cik: str, accession: str, primary_doc: str) -> Optional[str]:
     """
-    Download the primary document text for a single filing.
-
-    URL format:
-      https://www.sec.gov/Archives/edgar/data/{cik}/{accession_no_dashes}/{primary_doc}
+    Download the document text for a single filing, attempting to find and
+    retrieve Exhibit 99.1 (the press release) if referenced, falling back to 
+    the primary document if not found.
     """
     acc_clean = accession.replace("-", "")
     cik_clean = cik.lstrip("0") or "0"
@@ -172,7 +171,50 @@ def _download_filing_text(cik: str, accession: str, primary_doc: str) -> Optiona
     try:
         resp = requests.get(url, headers=SEC_HEADERS, timeout=30)
         resp.raise_for_status()
-        return resp.text
+        primary_html = resp.text
+        
+        # Parse links to see if there is an Exhibit 99.1 or press release exhibit
+        soup = BeautifulSoup(primary_html, "html.parser")
+        
+        exhibit_href = None
+        # Step 1: Look for exact 99.1 patterns
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            text = a.get_text().lower()
+            href_lower = href.lower()
+            if (
+                "99.1" in text or 
+                "ex-99.1" in href_lower or 
+                "ex991" in href_lower or 
+                "ex99-1" in href_lower or 
+                "exhibit 99.1" in text
+            ):
+                exhibit_href = href
+                break
+                
+        # Step 2: Fallback search if no exact match
+        if not exhibit_href:
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                text = a.get_text().lower()
+                href_lower = href.lower()
+                if "press release" in text or "ex-99" in href_lower or "ex99" in href_lower or "exhibit" in href_lower:
+                    exhibit_href = href
+                    break
+                    
+        # If exhibit was found, download it instead of the cover sheet
+        if exhibit_href:
+            exhibit_name = os.path.basename(exhibit_href)
+            exhibit_url = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc_clean}/{exhibit_name}"
+            try:
+                resp_ex = requests.get(exhibit_url, headers=SEC_HEADERS, timeout=30)
+                resp_ex.raise_for_status()
+                logger.debug(f"Downloaded Exhibit 99.1 from {exhibit_url} instead of primary {url}")
+                return resp_ex.text
+            except Exception as e:
+                logger.debug(f"Failed to download Exhibit 99.1 from {exhibit_url}, falling back to primary: {e}")
+                
+        return primary_html
     except Exception as e:
         logger.debug(f"Failed to download {url}: {e}")
         return None
@@ -180,13 +222,14 @@ def _download_filing_text(cik: str, accession: str, primary_doc: str) -> Optiona
 
 # ── Text Preprocessing ───────────────────────────────────────────────────────
 
-# Patterns for boilerplate removal
+# Patterns for boilerplate removal — match only within a single line
+# (no DOTALL, so '.' does not cross newlines; prevents eating entire documents)
 _BOILERPLATE_PATTERNS = [
-    re.compile(r"(?i)forward[- ]looking\s+statement.*?(?:\n\n|\Z)", re.DOTALL),
-    re.compile(r"(?i)safe\s+harbor.*?(?:\n\n|\Z)", re.DOTALL),
-    re.compile(r"(?i)this\s+press\s+release\s+contains\s+forward.*?(?:\n\n|\Z)", re.DOTALL),
-    re.compile(r"(?i)(?:about|contact)\s+(?:the\s+)?company.*?(?:\n\n|\Z)", re.DOTALL),
-    re.compile(r"(?i)investor\s+(?:relations|contact).*?(?:\n\n|\Z)", re.DOTALL),
+    re.compile(r"(?i)^.*forward[- ]looking\s+statement.*$", re.MULTILINE),
+    re.compile(r"(?i)^.*safe\s+harbor\b.*$", re.MULTILINE),
+    re.compile(r"(?i)^.*this\s+press\s+release\s+contains\s+forward.*$", re.MULTILINE),
+    re.compile(r"(?i)^.*(?:about|contact)\s+(?:the\s+)?company\s*$", re.MULTILINE),
+    re.compile(r"(?i)^.*investor\s+(?:relations|contact).*$", re.MULTILINE),
     re.compile(r"(?i)###\s*$", re.MULTILINE),
     re.compile(r"(?i)press\s+release\s*$", re.MULTILINE),
 ]
@@ -229,19 +272,29 @@ def clean_filing_text(raw_html: str) -> str:
     lines = text_content.split("\n")
     cleaned_lines = []
     skip_rest = False
-    for line in lines:
+    
+    total_chars = sum(len(line.strip()) for line in lines if line.strip())
+    accumulated_chars = 0
+    
+    for idx, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             cleaned_lines.append("")
             continue
 
-        # Once we hit a major legal disclaimer section, skip the rest
+        line_len = len(stripped)
+
+        # Once we hit a major legal disclaimer section, skip the rest.
+        # To avoid early matching on cover disclaimers, only allow truncation 
+        # in the latter part of the document (after 70% of characters).
         if any(marker.lower() in stripped.lower() for marker in _LEGAL_MARKERS):
-            skip_rest = True
+            if accumulated_chars > total_chars * 0.70:
+                skip_rest = True
 
         if skip_rest:
             continue
 
+        accumulated_chars += line_len
         cleaned_lines.append(stripped)
 
     text_content = "\n".join(cleaned_lines)
@@ -249,6 +302,21 @@ def clean_filing_text(raw_html: str) -> str:
     # Collapse runs of whitespace / blank lines
     text_content = re.sub(r"\n{3,}", "\n\n", text_content)
     text_content = re.sub(r"[ \t]+", " ", text_content)
+
+    # Minimum-length safeguard: if cleaned text falls below 100 words but original was longer,
+    # fall back to not truncating at all.
+    cleaned_words = len(text_content.split())
+    if cleaned_words < 100 and len(lines) > 20:
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                cleaned_lines.append("")
+                continue
+            cleaned_lines.append(stripped)
+        text_content = "\n".join(cleaned_lines)
+        text_content = re.sub(r"\n{3,}", "\n\n", text_content)
+        text_content = re.sub(r"[ \t]+", " ", text_content)
 
     return text_content.strip()
 
@@ -353,18 +421,20 @@ class FinBERTScorer:
     def score_text(self, text_content: str) -> float:
         """
         Score a single text string. Returns a float in [-1.0, +1.0].
+
+        Uses the full 3-way probability distribution from FinBERT:
+            score = P(positive) - P(negative)
+        so that text classified as "neutral" with e.g. P(pos)=0.20, P(neg)=0.05
+        still gets a meaningful +0.15 rather than exactly 0.0.
         """
         self._load()
 
         if not text_content or not text_content.strip():
             return 0.0
 
-        result = self._pipeline(text_content[:10000])[0]   # safety truncation
-        label = result["label"].lower()
-        confidence = result["score"]
-
-        weight = self._LABEL_MAP.get(label, 0.0)
-        return weight * confidence
+        results = self._pipeline(text_content[:10000], top_k=None)
+        probs = {r["label"].lower(): r["score"] for r in results}
+        return probs.get("positive", 0.0) - probs.get("negative", 0.0)
 
     def score_chunks(self, chunks: list[str]) -> tuple[float, int]:
         """

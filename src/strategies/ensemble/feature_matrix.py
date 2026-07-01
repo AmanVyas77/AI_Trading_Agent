@@ -20,6 +20,8 @@ Output
             gross_profitability, fcf_yield, revenue_acceleration,
             deferred_revenue_yoy, rd_intensity,
             sue_score, eps_revision_1m, eps_revision_3m,
+            piotroski_f, qmj_safety, qmj_payout,
+            finbert_score, lm_sentiment_score,
             vix, yield_spread_10y2y, fed_funds_rate, cpi]
 
 CLI
@@ -63,6 +65,8 @@ FUND_COLS = [
     "gross_profitability", "fcf_yield", "revenue_acceleration",
     "deferred_revenue_yoy", "rd_intensity",
     "sue_score", "eps_revision_1m", "eps_revision_3m",
+    "piotroski_f", "qmj_safety", "qmj_payout",
+    "finbert_score", "lm_sentiment_score",
 ]
 
 MACRO_COLS = ["vix", "yield_spread_10y2y", "fed_funds_rate", "cpi"]

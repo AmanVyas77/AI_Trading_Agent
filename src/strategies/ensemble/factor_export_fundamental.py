@@ -15,13 +15,20 @@ Features Exported
   sue_score             — Standardized Unexpected Earnings
   eps_revision_1m       — 1-month EPS revision momentum
   eps_revision_3m       — 3-month EPS revision momentum
+  piotroski_f           — Piotroski F-Score (0–9, from xbrl_features)
+  qmj_safety            — Quality-Minus-Junk safety score (from xbrl_features)
+  qmj_payout            — Quality-Minus-Junk payout score (from xbrl_features)
+  finbert_score         — FinBERT 8-K sentiment (-1 to +1, from sentiment_pipeline)
+  lm_sentiment_score    — Loughran-McDonald 10-K net sentiment (from sentiment_pipeline)
 
 Output
 ------
   data/processed/fundamental_factor_scores.parquet
   Columns: [quarter_end, ticker, gross_profitability, fcf_yield,
             revenue_acceleration, deferred_revenue_yoy, rd_intensity,
-            sue_score, eps_revision_1m, eps_revision_3m]
+            sue_score, eps_revision_1m, eps_revision_3m,
+            piotroski_f, qmj_safety, qmj_payout,
+            finbert_score, lm_sentiment_score]
 
 CLI
 ---
@@ -63,6 +70,11 @@ FACTOR_COLS = [
     "sue_score",
     "eps_revision_1m",
     "eps_revision_3m",
+    "piotroski_f",
+    "qmj_safety",
+    "qmj_payout",
+    "finbert_score",
+    "lm_sentiment_score",
 ]
 
 ZSCORE_CAP = 3.0
@@ -165,6 +177,109 @@ def _load_eps_revisions(tickers: Optional[list[str]], engine) -> pd.DataFrame:
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+# ── Piotroski / QMJ Loaders ──────────────────────────────────────────────────
+
+def _load_piotroski_qmj(
+    tickers: Optional[list[str]],
+    start: Optional[str],
+    end: Optional[str],
+    engine,
+) -> pd.DataFrame:
+    """
+    Load piotroski_f, qmj_safety, qmj_payout via the existing compute
+    functions in xbrl_features.py.  Returns [ticker, quarter_end, piotroski_f,
+    qmj_safety, qmj_payout] — one row per ticker per quarter.
+    """
+    from src.strategies.fundamental.xbrl_features import (
+        compute_piotroski_f,
+        compute_qmj_safety,
+        compute_qmj_payout,
+    )
+
+    frames = {}
+    for name, fn in [
+        ("piotroski_f", compute_piotroski_f),
+        ("qmj_safety", compute_qmj_safety),
+        ("qmj_payout", compute_qmj_payout),
+    ]:
+        try:
+            df = fn(tickers=tickers, start=start, end=end, engine=engine)
+            if not df.empty:
+                frames[name] = df
+                logger.info(f"  {name}: {len(df)} rows")
+            else:
+                logger.info(f"  {name}: empty")
+        except Exception as e:
+            logger.warning(f"  {name} load failed: {e}")
+
+    if not frames:
+        return pd.DataFrame(columns=["ticker", "quarter_end",
+                                     "piotroski_f", "qmj_safety", "qmj_payout"])
+
+    result = None
+    for name, df in frames.items():
+        df = df[["ticker", "quarter_end", name]].copy()
+        df["quarter_end"] = pd.to_datetime(df["quarter_end"])
+        if result is None:
+            result = df
+        else:
+            result = result.merge(df, on=["ticker", "quarter_end"], how="outer")
+    return result
+
+
+def _load_finbert_quarterly(
+    tickers: Optional[list[str]],
+    engine,
+) -> pd.DataFrame:
+    """
+    Load FinBERT 8-K sentiment scores and resample to quarter-end frequency.
+    Takes the mean score per ticker per quarter (a ticker may have multiple
+    8-K filings in one quarter).  Returns [ticker, quarter_end, finbert_score].
+    """
+    from src.strategies.fundamental.sentiment_pipeline import load_sentiment
+
+    try:
+        sent = load_sentiment(tickers=tickers, engine=engine)
+    except Exception as e:
+        logger.warning(f"  finbert_score load failed: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "finbert_score"])
+
+    if sent.empty:
+        return pd.DataFrame(columns=["ticker", "quarter_end", "finbert_score"])
+
+    df = sent.reset_index()
+    df["quarter_end"] = df["date"].dt.to_period("Q").dt.to_timestamp("Q")
+    qe = df.groupby(["ticker", "quarter_end"])["finbert_score"].mean().reset_index()
+    logger.info(f"  finbert_score: {len(qe)} ticker-quarter rows")
+    return qe
+
+
+def _load_lm_quarterly(
+    tickers: Optional[list[str]],
+    start: Optional[str],
+    end: Optional[str],
+    engine,
+) -> pd.DataFrame:
+    """
+    Load Loughran-McDonald 10-K sentiment scores aligned to quarter-end.
+    Returns [ticker, quarter_end, lm_sentiment_score].
+    """
+    from src.strategies.fundamental.sentiment_pipeline import load_lm_scores
+
+    try:
+        df = load_lm_scores(tickers=tickers, start=start, end=end, engine=engine)
+    except Exception as e:
+        logger.warning(f"  lm_sentiment_score load failed: {e}")
+        return pd.DataFrame(columns=["ticker", "quarter_end", "lm_sentiment_score"])
+
+    if df.empty:
+        return pd.DataFrame(columns=["ticker", "quarter_end", "lm_sentiment_score"])
+
+    df["quarter_end"] = pd.to_datetime(df["quarter_end"])
+    logger.info(f"  lm_sentiment_score: {len(df)} rows")
+    return df[["ticker", "quarter_end", "lm_sentiment_score"]]
 
 
 # ── Quarter-End Alignment ─────────────────────────────────────────────────────
@@ -282,6 +397,15 @@ def build_fundamental_scores(
     logger.info("Loading eps_revisions…")
     revs = _load_eps_revisions(tickers, engine)
 
+    logger.info("Loading Piotroski F / QMJ…")
+    pqmj = _load_piotroski_qmj(tickers, start, end, engine)
+
+    logger.info("Loading FinBERT sentiment…")
+    finbert = _load_finbert_quarterly(tickers, engine)
+
+    logger.info("Loading LM sentiment…")
+    lm_sent = _load_lm_quarterly(tickers, start, end, engine)
+
     # ── 2. Align each source to quarter-end dates ─────────────────────
     xbrl_cols = ["gross_profitability", "fcf_yield", "revenue_acceleration",
                  "deferred_revenue_yoy", "rd_intensity"]
@@ -300,7 +424,7 @@ def build_fundamental_scores(
     quarter_ends = pd.date_range(start=start, end=end, freq="QE")
 
     all_tickers: set[str] = set()
-    for frame in [qe_derived, qe_sue, qe_rev]:
+    for frame in [qe_derived, qe_sue, qe_rev, pqmj, finbert, lm_sent]:
         if isinstance(frame, pd.DataFrame) and not frame.empty and "ticker" in frame.columns:
             all_tickers.update(frame["ticker"].unique())
     if tickers:
@@ -326,6 +450,9 @@ def build_fundamental_scores(
     matrix = _merge(matrix, qe_derived)
     matrix = _merge(matrix, qe_sue)
     matrix = _merge(matrix, qe_rev)
+    matrix = _merge(matrix, pqmj)
+    matrix = _merge(matrix, finbert)
+    matrix = _merge(matrix, lm_sent)
 
     # ── 5. Forward-fill missing values (at most 1 quarter per ticker) ─
     matrix = matrix.sort_values(["ticker", "quarter_end"])
