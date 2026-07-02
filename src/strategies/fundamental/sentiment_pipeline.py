@@ -65,12 +65,35 @@ MAX_TOKENS = SENT_CFG.get("max_tokens", 512)
 FILING_TYPES = SENT_CFG.get("filing_types", ["8-K"])
 MODEL_NAME = SENT_CFG.get("model", "ProsusAI/finbert")
 
+EWM_SPAN = 4  # Arratia (2021): smooth over ~4 filing periods
+
 # Date range for filing downloads
 DATE_START = "2015-01-01"
 DATE_END = "2024-12-31"
 
 # SEC rate-limit: ≤10 req/s → 0.15s between calls
 SEC_SLEEP = 0.15
+
+# ── EWM Smoothing ────────────────────────────────────────────────────────────
+
+
+def _ewm_smooth(df: pd.DataFrame, score_col: str, span: int = EWM_SPAN) -> pd.Series:
+    """
+    Per-ticker exponentially weighted moving average over filing periods.
+
+    Parameters
+    ----------
+    df        : must contain columns ["ticker", "filing_date", score_col]
+    score_col : name of the numeric column to smooth
+    span      : EWM span in filing periods (not calendar time)
+
+    Returns the smoothed Series aligned to df's index.
+    """
+    df = df.sort_values(["ticker", "filing_date"])
+    return df.groupby("ticker")[score_col].transform(
+        lambda x: x.ewm(span=span, min_periods=1).mean()
+    )
+
 
 # ── CIK Resolution ───────────────────────────────────────────────────────────
 
@@ -570,6 +593,10 @@ def load_sentiment(
         )
 
     df["filing_date"] = pd.to_datetime(df["filing_date"])
+
+    # Arratia (2021) EWM smoothing — applied per-ticker across filing periods
+    # before forward-filling to daily frequency.
+    df["finbert_score"] = _ewm_smooth(df, "finbert_score")
 
     # Forward-fill to daily frequency per ticker
     daily_frames = []
@@ -1225,6 +1252,10 @@ def load_lm_scores(
         return pd.DataFrame(
             columns=["ticker", "quarter_end", "lm_sentiment_score"]
         )
+
+    # Arratia (2021) EWM smoothing — applied per-ticker across filing periods
+    # before rounding to quarter-end.
+    df["lm_net_score"] = _ewm_smooth(df, "lm_net_score")
 
     # Round fiscal_year_end to its containing quarter-end.
     df["quarter_end"] = (
