@@ -1,0 +1,141 @@
+{
+  "generated_at": "2026-07-02T20:48:35.240257+00:00",
+  "sprint": "Sprint 3 proof run",
+  "inputs": {
+    "baseline_stats_csv": "backtests/results/ensemble_baseline_stats.csv",
+    "baseline_metrics_json": "backtests/results/baseline_metrics.json",
+    "gated_stats_csv": "backtests/results/ensemble_gated_stats.csv",
+    "baseline_equity_csvs": [
+      "backtests/results/ensemble_baseline_train_equity.csv",
+      "backtests/results/ensemble_baseline_test_equity.csv"
+    ],
+    "gated_equity_csvs": [
+      "backtests/results/ensemble_gated_train_equity.csv",
+      "backtests/results/ensemble_gated_test_equity.csv"
+    ]
+  },
+  "baseline": {
+    "full": {
+      "label": "baseline_full",
+      "start": "2018-07-02",
+      "end": "2024-12-31",
+      "total_return_pct": 144.9698,
+      "cagr_pct": 14.7801,
+      "sharpe_ratio": 0.5996,
+      "sortino_ratio": 0.7477,
+      "max_drawdown_pct": -43.7885,
+      "calmar_ratio": 0.3375
+    },
+    "train": {
+      "label": "baseline_train",
+      "start": "2018-07-02",
+      "end": "2022-12-30",
+      "total_return_pct": 88.689,
+      "cagr_pct": 15.1695,
+      "sharpe_ratio": 0.5775,
+      "sortino_ratio": 0.7575,
+      "max_drawdown_pct": -43.7885,
+      "calmar_ratio": 0.3464
+    },
+    "test": {
+      "label": "baseline_test",
+      "start": "2023-01-03",
+      "end": "2024-12-31",
+      "total_return_pct": 29.4237,
+      "cagr_pct": 13.8149,
+      "sharpe_ratio": 0.7826,
+      "sortino_ratio": 0.9729,
+      "max_drawdown_pct": -15.5659,
+      "calmar_ratio": 0.8875
+    },
+    "stress_2022": {
+      "year": 2022,
+      "start": "2022-01-03",
+      "end": "2022-12-30",
+      "max_drawdown_pct": -41.7375,
+      "year_return_pct": -38.0101
+    },
+    "baseline_metrics_json_2022_max_dd_pct": -41.74
+  },
+  "gated": {
+    "full": {
+      "label": "gated_full",
+      "start": "2018-07-02",
+      "end": "2024-12-31",
+      "total_return_pct": 79.2058,
+      "cagr_pct": 9.3904,
+      "sharpe_ratio": 0.5308,
+      "sortino_ratio": 0.6685,
+      "max_drawdown_pct": -36.6084,
+      "calmar_ratio": 0.2565
+    },
+    "train": {
+      "label": "gated_train",
+      "start": "2018-07-02",
+      "end": "2022-12-30",
+      "total_return_pct": 61.1008,
+      "cagr_pct": 11.1904,
+      "sharpe_ratio": 0.5542,
+      "sortino_ratio": 0.7545,
+      "max_drawdown_pct": -36.6084,
+      "calmar_ratio": 0.3057
+    },
+    "test": {
+      "label": "gated_test",
+      "start": "2023-01-03",
+      "end": "2024-12-31",
+      "total_return_pct": 11.0647,
+      "cagr_pct": 5.4062,
+      "sharpe_ratio": 0.5955,
+      "sortino_ratio": 0.757,
+      "max_drawdown_pct": -7.2149,
+      "calmar_ratio": 0.7493
+    },
+    "stress_2022": {
+      "year": 2022,
+      "start": "2022-01-03",
+      "end": "2022-12-30",
+      "max_drawdown_pct": -34.2287,
+      "year_return_pct": -31.7663
+    }
+  },
+  "delta_gated_minus_baseline": {
+    "full": {
+      "total_return_pct": -65.764,
+      "cagr_pct": -5.3897,
+      "sharpe_ratio": -0.0688,
+      "sortino_ratio": -0.0792,
+      "max_drawdown_pp": 7.1801,
+      "calmar_ratio": -0.081
+    },
+    "train": {
+      "total_return_pct": -27.5882,
+      "cagr_pct": -3.9791,
+      "sharpe_ratio": -0.0233,
+      "sortino_ratio": -0.003,
+      "max_drawdown_pp": 7.1801,
+      "calmar_ratio": -0.0407
+    },
+    "test": {
+      "total_return_pct": -18.359,
+      "cagr_pct": -8.4087,
+      "sharpe_ratio": -0.1871,
+      "sortino_ratio": -0.2159,
+      "max_drawdown_pp": 8.351,
+      "calmar_ratio": -0.1382
+    },
+    "stress_2022": {
+      "max_drawdown_pp": 7.5088,
+      "year_return_pp": 6.2438
+    }
+  },
+  "notes": {
+    "delta_convention": "Delta = gated - baseline. For max_drawdown (negative values) a POSITIVE delta = less-deep drawdown = improvement.",
+    "stress_2022_source": "Recomputed peak-to-trough within 2022 subset of TRAIN equity curve; matches baseline_metrics.json drawdown_2022 within rounding.",
+    "sprint_changes_active": [
+      "Sprint 1 regime gate (0.5/1.0/1.2 monthly multipliers)",
+      "Sprint 2 EWM smoothing span=4 on FinBERT/LM sentiment"
+    ]
+  },
+  "verdict_notes": "Regime gate reduced the 2022 max drawdown from -41.74% to -34.23% (+7.51pp), but this falls short of the +10pp threshold set as 'meaningful', so the primary drawdown objective is FAIL. The tradeoff is worse than acceptable: full-period CAGR fell 5.39pp (14.78% -> 9.39%), well beyond the 3pp tolerance, and Sharpe dropped from 0.600 to 0.531 -- lower CAGR with lower Sharpe is the signature of a gate that is reducing exposure rather than making smarter bets. Test-period performance (2023-24, which live-signal analysis flagged as largely risk-on) also worsened: CAGR -8.41pp and Sharpe -0.187, meaning the 1.2x multiplier did not deliver the promised upside amplification. Sprint 4 (TimesFM momentum factor) should NOT be gated open on top of the current regime layer -- the gate needs to be re-tuned (thresholds, multiplier magnitudes, or a smarter regime classifier) before stacking new factors on it, since building on a Sharpe-reducing gate would confound the TimesFM signal evaluation."
+}
