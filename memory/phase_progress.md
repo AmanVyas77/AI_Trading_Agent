@@ -154,22 +154,109 @@ the 0.721 value stored in `baseline_metrics.json` /
 
 ---
 
-## Sprint 5 (TimesFM momentum factor) — GATE STATUS: **CLOSED, proceed anyway**
+## Sprint 5 — TimesFM 1M forward-return factor (commit 65bc3bb)
 
-Per the strict Sprint 4 verdict the TimesFM gate is CLOSED (Sharpe still
-below baseline, primary 2022 DD still short). But Sprint 4 surfaced a
-diagnosis that changes the plan (see `memory/future_ideas.md`): the
-test-period Sharpe *worsened* when exposure was restored (Sprint 3
-0.596 → Sprint 4 0.478), which points at the underlying XGBoost stock
-selection — trained pre-AI-boom, it does not overweight the 2023-24
-mega-cap AI winners. Softer multipliers cannot fix a selection problem.
+Status: **COMPLETE** as of 2026-07-03. Verdict from
+`backtests/results/sprint5_results.json`: **PASS** — Phase 4b closed;
+next stop is Phase 5.
 
-Recommended Sprint 5: implement TimesFM as a new quant factor alongside
-the existing momentum lookbacks (Phase 1), keeping the graded gate in
-place. Evaluate whether TimesFM repairs test-period alpha before
-deciding whether to also soften the gate multipliers (0.7/1.0/1.1) or
-introduce continuous multipliers. Full reasoning in
-`memory/future_ideas.md`.
+### Motivation (carried from Sprint 4 diagnosis)
+Sprint 4 surfaced that test-period Sharpe *worsened* when exposure was
+restored (Sprint 3 0.596 → Sprint 4 0.478), pointing at the underlying
+XGBoost stock selection — trained on 2018–2022, it did not overweight
+the 2023–24 mega-cap AI winners. Sprint 5's hypothesis: adding a
+forward-looking TimesFM 1M return forecast as a new feature lets the
+model see momentum signals that don't require re-training on post-2022
+data.
+
+### Change
+- **New file:** `src/strategies/quant/timesfm_factor.py`. Google's
+  TimesFM 2.5 (200M params, PyTorch CPU) run per month-end over each
+  ticker's daily `adj_close` history. Module-level constants (NOT in
+  `settings.yaml`): `CONTEXT_LEN=252`, `HORIZON_LEN=21`, `MIN_CONTEXT=63`,
+  `HF_REPO="google/timesfm-2.5-200m-pytorch"`. Batches by month-end
+  (one `.forecast()` call for all eligible tickers at each date) →
+  ~120 batched inferences for the full 2015–2024 window, ~4 min end-to-end
+  on CPU with 2 threads. Median (quantile idx 4) at horizon step 20 is
+  denormalised back to price space and expressed as a 1M return.
+- **Modified:** `src/strategies/ensemble/factor_export_quant.py` — imports
+  `compute_timesfm_predictions`, computes it after the resample-to-month-end
+  step, and merges the long-format result into the tidy output. All
+  existing 1M/3M/6M/12M momentum lookbacks, `volume_zscore`, `inv_vol`
+  are **preserved** — TimesFM augments, does not replace.
+- **Modified:** `src/strategies/ensemble/feature_matrix.py` — appended
+  `"timesfm_pred_return_1m"` to `QUANT_COLS` (7th quant column). No
+  logic changes.
+
+### AlgoXpert DSR check (from Session 4's overfitting controls)
+- **`timesfm_pred_return_1m` deflated t-stat = 30.48** (threshold = 1.0).
+  30× the DSR floor — the signal survives multiple-testing correction
+  comfortably.
+- All 23 features (22 existing + TimesFM) survive the deflated-t cut.
+- XGBoost gain rank of TimesFM: **17/23** (0.0398 mean gain vs top
+  feature `vix` at 0.0587). Middling importance in tree splits but
+  statistically significant contribution.
+
+### Three-way comparison (Sprint 0 vs Sprint 4 vs Sprint 5)
+
+| Metric                        | Sprint 0 baseline | Sprint 4 (graded) | Sprint 5 (+ TimesFM) |
+|-------------------------------|-------------------|-------------------|----------------------|
+| Full-period CAGR (2018-2024)  | +14.78%           | +9.80%            | **+13.60%**          |
+| Full-period Sharpe            | 0.600             | 0.530             | **0.682**            |
+| **2022 max drawdown**         | −41.74%           | −34.23%           | **−29.78%**          |
+| Test-period CAGR (2023-2024)  | +13.81%           | +6.77%            | **+18.27%**          |
+| Test-period Sharpe            | 0.783             | 0.478             | **0.990**            |
+
+- **Test-CAGR recovery: 163.35%** of the 7.04pp Sprint-0-vs-Sprint-4
+  gap. TimesFM did not just close the gap — it beat Sprint 0's test
+  CAGR by +4.46pp.
+- Full-period Sharpe clears the Sprint 0 baseline (0.682 > 0.600) for
+  the first time since the ensemble was gated.
+- 2022 max DD improved from −34.23% (Sprint 4) to −29.78% — regime-gate
+  protection preserved and strengthened.
+- Only regression: test max DD went from −14.25% (Sprint 4) to −21.35%
+  as the model concentrated in AI winners; Calmar still improved to
+  0.856 in test.
+
+### Verdict (verbatim from `sprint5_results.json`)
+
+> TimesFM 1-month median forecast added as 23rd feature to walk-forward
+> XGBoost. Test-window CAGR rose from 6.77% (Sprint 4) to 18.27% —
+> recovering 163.4% of the 7.04pp Sprint-0-vs-Sprint-4 gap and actually
+> clearing the Sprint-0 test baseline (13.81%) by +4.46pp. Full-period
+> Sharpe 0.682 beats Sprint 4's 0.530 AND clears the Sprint 0 baseline
+> of 0.600 by ++0.082. 2022 max DD improved to -29.78% (was -34.23% in
+> Sprint 4) — protection preserved and strengthened. TimesFM feature
+> ranks 17/23 on avg XGBoost gain (0.0398) but its deflated t-stat is
+> 30.48 — 30x the DSR threshold of 1.0 — so the signal is real, not
+> multiple-testing noise. Test Sharpe 0.990 more than doubles Sprint 4's
+> 0.478 and exceeds Sprint 0 baseline 0.783.
+
+### Sprint 6 / Phase 5 recommendation (PASS branch)
+Phase 4b is complete. Two candidate Phase 5 directions:
+1. **Model refresh** — retrain the XGBoost combiner with a rolling
+   3-year window (drop pre-2020 data, include 2023–24 AI-boom
+   observations in the training set). Even with TimesFM helping, the
+   base model's regime knowledge is still 2018–2022. This is the
+   highest-leverage next step per Session 4's overfitting analysis.
+2. **Live trading pipeline** — begin end-to-end paper-trading harness
+   with the current ensemble (regime gate + TimesFM + XGBoost). Sprint 5
+   established that the strategy clears the Sprint 0 baseline on Sharpe
+   and beats it on test CAGR — the risk-adjusted profile is now
+   deployment-worthy for a paper stage.
+
+Suggested order: model refresh first (cheaper, faster to iterate), then
+live pipeline once refreshed model is validated.
+
+### Artefacts (Sprint 5)
+- `src/strategies/quant/timesfm_factor.py` — new module (tracked).
+- `src/strategies/ensemble/factor_export_quant.py`,
+  `src/strategies/ensemble/feature_matrix.py` — tracked with Sprint 5 edits.
+- `backtests/results/sprint5_results.json` — tracked; three-way diff,
+  deltas, checks, verdict.
+- `backtests/results/ensemble_timesfm_{train,test}_equity.csv`,
+  `ensemble_timesfm_stats.csv` — **tracked** (force-added despite
+  `*.csv` in `.gitignore`) for downstream Sprint 6+ benchmarking.
 
 ## Artefacts (all pinned in git or under `backtests/results/`)
 - `backtests/results/baseline_metrics.json` — Sprint 0 baseline (tracked)
