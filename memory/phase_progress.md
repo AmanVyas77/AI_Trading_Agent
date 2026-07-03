@@ -269,3 +269,80 @@ live pipeline once refreshed model is validated.
   feature matrix used by the gated run (local only, `*.parquet` gitignored)
 - `backtests/results/sprint3_proof_results.json` — **tracked**; contains
   all baseline, gated, delta, and verdict fields for reproducibility.
+
+---
+
+## Sprint 6 — Rolling 36-month training window (REFUTED)
+
+Status: **COMPLETE** as of 2026-07-03. Verdict from
+`backtests/results/sprint6_results.json`: **FAIL** — the rolling-window
+*configuration* is rejected; `WINDOW_YEARS` reverted to `None`
+(expanding), production models restored to Sprint 5 state. The trim
+mechanism + `window_start` bookkeeping remain in `model_trainer.py`,
+dormant when `WINDOW_YEARS is None`.
+
+### Change (tested, then reverted)
+- `src/strategies/ensemble/model_trainer.py`: added `WINDOW_YEARS`
+  module constant + a trailing-window trim inside the fold loop
+  (`train_df = train_df[train_df["date"] > train_end - DateOffset(years=WINDOW_YEARS)]`)
+  and a `window_start` key in the per-fold results dict. `target_builder.py`
+  untouched. Set to `3` for the Sprint 6 run, reverted to `None` after FAIL.
+- Retrained 78 folds on rolling 36-month windows: fit rows plateau at
+  ~1,554 mean / 1,590 final (vs Sprint 5's expanding 5,444 final).
+
+### Three-way comparison (Sprint 0 vs Sprint 5 vs Sprint 6)
+(all Sprint 6 metrics recomputed programmatically from the saved equity CSVs)
+
+| Metric                        | Sprint 0 baseline | Sprint 5 (+ TimesFM) | Sprint 6 (Rolling) |
+|-------------------------------|-------------------|----------------------|--------------------|
+| Full-period CAGR (2018-2024)  | +14.78%           | +13.60%              | **+10.59%**        |
+| Full-period Sharpe            | 0.600             | 0.682                | **0.558**          |
+| **2022 max drawdown**         | −41.74%           | −29.78%              | **−26.23%**        |
+| Test-period CAGR (2023-2024)  | +13.81%           | +18.27%              | **+14.81%**        |
+| Test-period Sharpe            | 0.783             | 0.990                | **1.041**          |
+| Test-period max DD            | —                 | −21.35%              | **−12.52%**        |
+
+### Checks (per `sprint6_results.json`, decided in advance)
+- (1) test Sharpe > 0.9898: **PASS** (1.041)
+- (2) test CAGR > 18.2699%: **FAIL** (14.81%)
+- (3) 2022 max DD ≥ −29.7815%: **PASS** (−26.23%)
+- Composite (all three required): **FAIL**
+
+### Breadth confound (why it failed)
+Smaller train sets compressed scores toward 0.5, so mean monthly names
+above the fixed `MIN_SCORE=0.52` gate fell 24.6 → 17.9 (−27.3%). **14 of
+~23 test months held ZERO names** → cash for 357 of 1636 days. The
+strategy sat out the 2023-24 tech rally (worst relative month 2023-11:
+rolling −0.1% vs Sprint 5 +10.0%), so test CAGR collapsed while test
+Sharpe *rose* — a zero-vol cash artifact, not improved selection.
+
+### Verdict (verbatim from `sprint6_results.json`)
+
+> Rolling 36-month window FAILS: test CAGR 14.81% is far below the 18.27%
+> bar (Sprint 5), though test Sharpe 1.041 edges above 0.990 and 2022 max
+> DD -26.23% is comfortably inside -29.78%. The dominant cause is a
+> BREADTH CONFOUND, not ranking skill: smaller train sets compress
+> predicted probabilities toward 0.5, so mean monthly names above the
+> 0.52 threshold fell from 24.6 (Sprint 5) to 17.9 (rolling), a -27.2%
+> drop; 14 of ~23 TEST months hold zero names, leaving the strategy in
+> cash for 357 of 1636 days. Month-by-month, the divergence vs Sprint 5
+> is concentrated in 2023-2024: rolling sat out much of the tech rally
+> (worst relative month 2023-11-30: rolling -0.1% vs Sprint 5 +10.0%),
+> which is exactly why test CAGR collapsed while Sharpe stayed high (cash
+> lowers volatility). The higher test Sharpe is therefore partly a
+> concentration/cash artifact and must not be read as improved selection.
+> Breadth fell 27.3% — under the 30% 'collapse' bar by the letter of the
+> rule, but concentrated in the test window, so the Sharpe comparison is
+> not apples-to-apples.
+
+### Artefacts (Sprint 6)
+- `src/strategies/ensemble/model_trainer.py` — tracked; `WINDOW_YEARS = None`
+  + dormant trim mechanism + `window_start` bookkeeping.
+- `backtests/results/sprint6_results.json` — tracked; three-way diff,
+  deltas, fold diagnostics, breadth diagnostics, checks, verdict.
+- `backtests/results/ensemble_rolling_{train,test}_equity.csv`,
+  `ensemble_rolling_stats.csv` — **tracked** (force-added despite `*.csv`
+  gitignore) — the rolling run's curves, preserved for the record.
+- `models/ensemble_models.pkl` — restored to Sprint 5 (expanding) state
+  from `ensemble_models_sprint5.pkl`; `data/processed/` scores + weights
+  regenerated to match (spot-check: test Sharpe 0.9898, exact).

@@ -2,8 +2,10 @@
 XGBoost Walk-Forward Trainer
 ==============================
 Trains one XGBClassifier per walk-forward fold using the labeled ensemble
-dataset. Each fold trains on all data up to month T and predicts month T+1.
-Uses early stopping on the last 6 months of training data as eval set.
+dataset. Each fold trains on the trailing WINDOW_YEARS years of data
+up to month T (or all history if WINDOW_YEARS is None) and predicts
+month T+1. Uses early stopping on the last 6 months of training data
+as eval set.
 
 Output
 ------
@@ -61,6 +63,16 @@ XGB_PARAMS = dict(
 
 # Eval set: use last N months of training data
 EVAL_MONTHS = 6
+
+# Sprint 6: rolling training window in years. None = anchored expanding
+# (Sprint 0-5 behavior). Trailing window is measured from each fold's
+# (already purge-shifted) train_end, so every fold keeps up to
+# WINDOW_YEARS*12 train months and early folds are unaffected.
+# Sprint 6 REFUTED the rolling config (breadth starvation → test CAGR
+# 14.81% vs 18.27% bar; see backtests/results/sprint6_results.json).
+# Reverted to None (expanding); trim mechanism below is retained but
+# dormant so a future rank-based variant can re-enable it.
+WINDOW_YEARS = None
 
 # AlgoXpert WFA embargo: months purged between train_end and test_month so
 # the early-stopping eval set cannot peek at labels whose 1-month forward
@@ -186,11 +198,18 @@ def train_walk_forward(
     # XGBClassifier feature_importances_ for the post-loop importance audit.
     importance_sum = None
 
-    # Expanding window: walk_forward_folds yields all historical data up to train_end.
+    # walk_forward_folds yields all historical data up to train_end. When
+    # WINDOW_YEARS is set, the fold loop trims train_df to the trailing
+    # WINDOW_YEARS window; None = anchored expanding (Sprint 0-5 behavior).
     # Purge gap: PURGE_MONTHS months between train_end and test_month (AlgoXpert WFA).
     for train_df, test_df in walk_forward_folds(labeled_df, purge_months=PURGE_MONTHS):
         fold_num += 1
         test_date = test_df["date"].iloc[0]
+
+        window_start = None
+        if WINDOW_YEARS is not None:
+            window_start = train_df["date"].max() - pd.DateOffset(years=WINDOW_YEARS)
+            train_df = train_df[train_df["date"] > window_start]
 
         # Split eval set from end of training data
         train_months = sorted(train_df["date"].unique())
@@ -236,6 +255,7 @@ def train_walk_forward(
             # AlgoXpert WFA bookkeeping — additive, pickle-format compatible
             "purged_months": PURGE_MONTHS,
             "effective_train_end": train_df["date"].max().date(),
+            "window_start": window_start.date() if window_start is not None else None,
         })
 
         # Accumulate this fold's feature importances for the cross-fold audit.
