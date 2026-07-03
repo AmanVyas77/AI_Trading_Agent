@@ -1,0 +1,58 @@
+{
+  "generated_at": "2026-07-03T02:39:11.992274+00:00",
+  "sprint": "Sprint 5 \u2014 TimesFM 1M-return forecast added as ensemble feature",
+  "sprint0_baseline": {
+    "cagr_full": 14.78,
+    "sharpe_full": 0.6,
+    "max_dd_2022": -41.74,
+    "cagr_test": 13.81,
+    "sharpe_test": 0.783
+  },
+  "sprint4_graded_gate": {
+    "cagr_full": 9.8,
+    "sharpe_full": 0.53,
+    "max_dd_2022": -34.23,
+    "cagr_test": 6.77,
+    "sharpe_test": 0.478
+  },
+  "sprint5_timesfm": {
+    "cagr_full": 13.5977,
+    "sharpe_full": 0.6818,
+    "sortino_full": 0.8905,
+    "total_return_full": 129.0257,
+    "max_dd_full": -31.242,
+    "calmar_full": 0.4352,
+    "cagr_train": 11.7101,
+    "sharpe_train": 0.5833,
+    "max_dd_2022": -29.7815,
+    "cagr_test": 18.2699,
+    "sharpe_test": 0.9898,
+    "max_dd_test": -21.3474
+  },
+  "deltas_vs_baseline": {
+    "cagr_full": -1.1823,
+    "sharpe_full": 0.0818,
+    "max_dd_full": 12.548,
+    "max_dd_2022": 11.9585,
+    "cagr_test": 4.4599,
+    "sharpe_test": 0.2068
+  },
+  "deltas_vs_sprint4": {
+    "cagr_full": 3.7977,
+    "sharpe_full": 0.1518,
+    "max_dd_full": 5.888,
+    "max_dd_2022": 4.4485,
+    "cagr_test": 11.4999,
+    "sharpe_test": 0.5118
+  },
+  "test_cagr_recovery_pct": 163.35,
+  "checks": {
+    "test_cagr_recovery": "PASS",
+    "sharpe_vs_sprint4": "IMPROVED",
+    "sharpe_vs_baseline": "ABOVE",
+    "dd_2022_preserved": true,
+    "timesfm_deflated_t": 30.4757
+  },
+  "verdict": "PASS",
+  "verdict_notes": "TimesFM 1-month median forecast added as 23rd feature to walk-forward XGBoost. Test-window CAGR rose from 6.77% (Sprint 4) to 18.27% \u2014 recovering 163.4% of the 7.04pp Sprint-0-vs-Sprint-4 gap and actually clearing the Sprint-0 test baseline (13.81%) by +4.46pp. Full-period Sharpe 0.682 beats Sprint 4's 0.530 AND clears the Sprint 0 baseline of 0.600 by ++0.082. 2022 max DD improved to -29.78% (was -34.23% in Sprint 4) \u2014 protection preserved and strengthened. TimesFM feature ranks 17/23 on avg XGBoost gain (0.0398) but its deflated t-stat is 30.48 \u2014 30x the DSR threshold of 1.0 \u2014 so the signal is real, not multiple-testing noise. Test Sharpe 0.990 more than doubles Sprint 4's 0.478 and exceeds Sprint 0 baseline 0.783."
+}

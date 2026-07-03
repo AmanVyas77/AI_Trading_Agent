@@ -6,18 +6,19 @@ resamples to month-end frequency, and saves a tidy long-format parquet.
 
 Factors
 -------
-  momentum_1m   : 21-day return (skip 5), cross-sectional z-score, clipped [-3,3]
-  momentum_3m   : 63-day return (skip 5), cross-sectional z-score, clipped [-3,3]
-  momentum_6m   : 126-day return (skip 5), cross-sectional z-score, clipped [-3,3]
-  momentum_12m  : 252-day return (skip 5), cross-sectional z-score, clipped [-3,3]
-  volume_zscore : 20-day rolling volume z-score, cross-sectional z-score, clipped [-3,3]
-  inv_vol       : inverse 21-day realized vol, cross-sectional z-score, clipped [-3,3]
+  momentum_1m            : 21-day return (skip 5), cross-sectional z-score, clipped [-3,3]
+  momentum_3m            : 63-day return (skip 5), cross-sectional z-score, clipped [-3,3]
+  momentum_6m            : 126-day return (skip 5), cross-sectional z-score, clipped [-3,3]
+  momentum_12m           : 252-day return (skip 5), cross-sectional z-score, clipped [-3,3]
+  volume_zscore          : 20-day rolling volume z-score, cross-sectional z-score, clipped [-3,3]
+  inv_vol                : inverse 21-day realized vol, cross-sectional z-score, clipped [-3,3]
+  timesfm_pred_return_1m : TimesFM 1-month median return forecast (raw return, not z-scored)
 
 Output
 ------
   data/processed/quant_factor_scores.parquet
   Columns: [date, ticker, momentum_1m, momentum_3m, momentum_6m,
-            momentum_12m, volume_zscore, inv_vol]
+            momentum_12m, volume_zscore, inv_vol, timesfm_pred_return_1m]
 
 CLI
 ---
@@ -35,6 +36,10 @@ import pandas as pd
 import yaml
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, inspect
+
+from src.strategies.quant.timesfm_factor import (
+    compute_timesfm_predictions,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -252,6 +257,7 @@ def build_quant_scores(
         return pd.DataFrame(columns=[
             "date", "ticker", "momentum_1m", "momentum_3m",
             "momentum_6m", "momentum_12m", "volume_zscore", "inv_vol",
+            "timesfm_pred_return_1m",
         ])
 
     # Drop tickers with < 252 trading days of history
@@ -278,9 +284,30 @@ def build_quant_scores(
     for name, df in factor_dfs.items():
         monthly_factors[name] = df.resample("ME").last()
 
+    # ── 3.5 TimesFM 1-month return forecast (per month-end) ──────────
+    logger.info("Computing TimesFM 1-month return forecasts…")
+    month_ends = next(iter(monthly_factors.values())).index
+    try:
+        timesfm_df = compute_timesfm_predictions(prices, month_ends)
+    except Exception as e:
+        logger.error(
+            "TimesFM factor failed (%s) — column will be all NaN", e,
+        )
+        timesfm_df = pd.DataFrame(
+            columns=["ticker", "date", "timesfm_pred_return_1m"],
+        )
+
     # ── 4. Convert to tidy long format ───────────────────────────────
     logger.info("Converting to long format…")
     result = _wide_to_long(monthly_factors)
+
+    # Merge TimesFM forecasts (already long-format on [date, ticker])
+    if not timesfm_df.empty:
+        result = result.merge(
+            timesfm_df, on=["date", "ticker"], how="left",
+        )
+    else:
+        result["timesfm_pred_return_1m"] = np.nan
 
     # Drop rows where ALL factor columns are NaN
     factor_cols = [c for c in result.columns if c not in ("date", "ticker")]

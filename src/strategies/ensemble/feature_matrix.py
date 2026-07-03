@@ -59,6 +59,7 @@ PROCESSED.mkdir(parents=True, exist_ok=True)
 QUANT_COLS = [
     "momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m",
     "volume_zscore", "inv_vol",
+    "timesfm_pred_return_1m",
 ]
 
 FUND_COLS = [
