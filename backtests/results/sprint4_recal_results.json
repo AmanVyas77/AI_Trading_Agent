@@ -1,0 +1,53 @@
+{
+  "generated_at": "2026-07-03T00:03:53.693169+00:00",
+  "sprint": "Sprint 4 recalibration \u2014 regime gate OR \u2192 graded (VIX>25 OR VIX>20&spread<0)",
+  "sprint0_baseline": {
+    "cagr_full": 14.78,
+    "sharpe_full": 0.721,
+    "max_dd_2022": -41.74,
+    "cagr_test": 13.81,
+    "sharpe_test": 0.783
+  },
+  "sprint3_or_gate": {
+    "cagr_full": 9.3904,
+    "sharpe_full": 0.5308,
+    "max_dd_2022": -34.2287,
+    "cagr_test": 5.4062,
+    "sharpe_test": 0.5955
+  },
+  "sprint4_and_gate": {
+    "cagr_full": 9.7961,
+    "sharpe_full": 0.5296,
+    "max_dd_2022": -34.2287,
+    "cagr_test": 6.7698,
+    "sharpe_test": 0.4781
+  },
+  "deltas_vs_baseline": {
+    "cagr": -4.9839,
+    "sharpe": -0.1914,
+    "max_dd_2022": 7.5113,
+    "cagr_test": -7.0402,
+    "sharpe_test": -0.3049
+  },
+  "deltas_vs_sprint3": {
+    "cagr": 0.4057,
+    "sharpe": -0.0012,
+    "max_dd_2022": -0.0,
+    "cagr_test": 1.3636,
+    "sharpe_test": -0.1174
+  },
+  "checks": {
+    "primary_2022_dd": "FAIL",
+    "tradeoff_cagr": "FAIL",
+    "tradeoff_sharpe": "FAIL",
+    "risk_on_upside": "PARTIAL"
+  },
+  "timesfm_gate": "CLOSED",
+  "verdict": "The graded gate (VIX>25 OR VIX>20-with-inverted-curve) fixed Sprint 3's over-exposure problem in direction but not magnitude: 18 of 19 SPREAD_ONLY test months moved back to NEUTRAL, lifting test-window CAGR from +5.41% (Sprint 3 OR) to +6.77% (+1.36pp), yet still 7.05pp shy of the 13.81% baseline \u2014 the recalibration recovered only about 16% of the OR gate's test-CAGR gap. 2022 drawdown protection was preserved exactly (-34.23% max DD, identical to Sprint 3 within rounding), confirming Prompt 1's read that the VIX>25 arm is what actually protects the crash months. Against the Sprint 0 baseline the tradeoff is still unacceptable: full-period CAGR at 9.80% is -4.98pp below baseline (outside the 3pp tolerance), full Sharpe 0.530 vs 0.721 (-0.191), and 2022 max DD -34.23% remains 2.49pp short of the primary -31.74% target \u2014 so the primary DD check FAILS, both tradeoff checks FAIL, and the risk-on upside is PARTIAL. TimesFM gate: CLOSED \u2014 stacking a new momentum factor on a still-Sharpe-reducing gate would confound its evaluation; the SPREAD arm needs further weakening (softer multiplier, or continuous scaling) before Sprint 4 stacks TimesFM.",
+  "notes": {
+    "gate_style": "Graded gate \u2014 Arm 1: VIX>25 (independent). Arm 2: VIX>20 AND spread<0. Preserved 2022 VIX-only months that a strict AND would have released.",
+    "baseline_source": "Prompt-stated verified facts (CAGR/Sharpe/Sortino/2022 DD/test Sharpe/test DD). Train Sharpe and full max DD/Calmar/total return read from sprint3_proof_results.json baseline block.",
+    "baseline_discrepancy": "Sprint 0 full Sharpe: prompt says 0.721, sprint3_proof_results.json says 0.5996. Sortino: prompt ~0.900 vs JSON 0.7477. Used prompt values per instructions; the discrepancy is worth verifying before Prompt 5.",
+    "delta_convention": "Delta = S4 - other. For drawdowns (negative), positive delta = less-deep = improvement."
+  }
+}

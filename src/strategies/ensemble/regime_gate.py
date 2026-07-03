@@ -56,7 +56,8 @@ def _classify_row(vix: Optional[float], spread: Optional[float]) -> str:
     if vix is None and spread is None:
         return "NEUTRAL"
     if (vix is not None and vix > VIX_RISK_OFF) or (
-        spread is not None and spread < SPREAD_FLOOR
+        vix is not None and vix > VIX_RISK_ON
+        and spread is not None and spread < SPREAD_FLOOR
     ):
         return "RISK_OFF"
     if (vix is not None and vix < VIX_RISK_ON) and (
