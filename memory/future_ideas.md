@@ -149,24 +149,55 @@ Needs its own design pass — do not bolt onto Option B or the analyst layer.
 
 ---
 
-## Sprint 7 candidate — 2025-26 TRUE HOLDOUT validation (burn-once, run FIRST)
+## Sprint 7 — 2025-26 true-holdout validation — **VALIDATED** (burn-once, spent)
 
-**Status:** open, proposed next sprint (2026-07-04). Prices in DB to 2026-05-08,
-macro to 2026-05, LM to 2026-06; FinBERT stale since 2024-12 (must backfill first).
+**Status:** closed 2026-07-04. Verdict: **PASS** — holdout Sharpe
+**1.016** > pre-committed 0.600 bar (Δ +0.416). See
+`backtests/results/sprint7_results.json` and `memory/phase_progress.md`
+Sprint 7 section for the numbers and the seven caveats.
 
-Run the FROZEN Sprint 5 production model over 2025-01 → current day. Every
-design decision (Sprints 0-6) used data ≤ 2024-11 only, so 2025-26 is a genuine
-out-of-sample holdout — the strongest validation evidence this project can
-produce. RULES: (1) pre-commit the expectation before running (one rule, one
-run, one verdict — no iteration against this window, it is burn-once);
-(2) run BEFORE any new feature (news sentiment below) is added — adding
-features first destroys the frozen-design claim; (3) needs end-date override
-params in the loaders that clamp to TIMELINE["test_end"] (module-level, NOT
-settings.yaml); ~18 new TimesFM month-end batches; XLK/labels through 2026.
-Caveat to note in the writeup: TimesFM pretraining data vintage is a possible
-subtle leak channel for 2025 — acknowledge, don't overclaim.
-Synergy: the data-freshness work IS Option B's prerequisite list — this sprint
-doubles as the live pipeline's plumbing dry-run.
+Key numbers (2025-01-31 → 2026-06-30, 354 daily obs):
+
+| | Strategy | SPY |
+|---|---|---|
+| Sharpe | **1.016** | 1.007 |
+| CAGR | +32.89% | +17.95% |
+| Total return | +49.33% | +26.21% |
+| Max DD | −27.03% | −18.76% |
+
+What the result does and does not prove:
+- **Proves:** the Sprint 5 factor stack + graded regime gate did not
+  decay to noise on a genuine out-of-sample window.
+- **Does not prove:** statistical robustness. 18 months puts the SE on
+  Sharpe at ~±0.30; May 2026's +23-pt single-month excess is roughly
+  half the total-return gap; 82% of days were RISK_ON (1.2× leverage);
+  TimesFM's pretrained-checkpoint data vintage is a possible subtle
+  leak channel for 2025. Any one of those is individually sufficient
+  to explain the excess.
+
+**Burn-once — the window is now spent.** No future experiment may tune
+against 2025-01-01 → 2026-06-30. Post-2026-06-30 months become the
+next available holdout as they accrue (~monthly cadence). If a future
+sprint's changes need OOS validation, it must either wait for enough
+new months to build a fresh window, or rely on in-sample CV alone
+until the next natural holdout is available.
+
+**Inheritance for Sprint 8 (Option B, below):**
+- `src/live/scorer.py` — the frozen-model scorer is reusable as-is
+  for the live pipeline's unlabeled-current-month scoring path (it
+  already handles X.reindex/fillna and the last-fold selection).
+- `scripts/run_holdout.py` — the injection pattern
+  (`build_portfolio_weights(scores_df=, prices=)`) is the template
+  for the paper-trading harness; internal loaders' `TIMELINE`
+  clamps are bypassable without editing tracked modules.
+- `scripts/backfill_cpi.py` — Sprint 8's live schedule can call it
+  monthly to keep `macro_series['cpi']` current until CPIAUCSL is
+  added to `settings.yaml`'s FRED list.
+- Data feeds current as of 2026-07-02: prices, VIX/T10Y2Y/DFF/etc.,
+  FinBERT (2026-07-02), LM (2026-06-05), CPI (2026-05-01).
+- Sentiment pipeline now takes `--date-start/--date-end` — the daily
+  live loop can pass yesterday-to-today windows for incremental
+  updates without touching the module constants.
 
 ---
 

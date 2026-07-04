@@ -623,6 +623,8 @@ def load_sentiment(
 def run_sentiment_pipeline(
     tickers: Optional[list[str]] = None,
     cpu_only: bool = False,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
 ) -> None:
     """
     Full FinBERT sentiment pipeline:
@@ -630,7 +632,14 @@ def run_sentiment_pipeline(
       2. For each ticker, download 8-K filings from EDGAR
       3. Clean text, chunk, score with FinBERT
       4. Upsert scores to SQLite
+
+    date_start / date_end : optional YYYY-MM-DD window overriding the
+    module-level DATE_START / DATE_END constants (2015-01-01 / 2024-12-31).
+    Upserts are idempotent (INSERT OR REPLACE), so re-runs on overlapping
+    windows are safe.
     """
+    date_start = date_start or DATE_START
+    date_end = date_end or DATE_END
     # Load universe if no tickers specified
     if tickers is None:
         uni_path = ROOT / "data" / "universe" / "universe.csv"
@@ -673,7 +682,12 @@ def run_sentiment_pipeline(
         time.sleep(SEC_SLEEP)
 
         # 2. Collect 8-K filings (FILING_TYPES from settings.yaml; defaults to ["8-K"])
-        filings = _collect_filings(submissions, form_types=FILING_TYPES)
+        filings = _collect_filings(
+            submissions,
+            form_types=FILING_TYPES,
+            date_start=date_start,
+            date_end=date_end,
+        )
         if not filings:
             logger.info(f"[{ticker_upper}] No 8-K filings found in date range")
             continue
@@ -1292,6 +1306,16 @@ def main():
         help="Force CPU inference (skip MPS / CUDA detection)",
     )
     parser.add_argument(
+        "--date-start",
+        default=None,
+        help=f"FinBERT 8-K collection start date (default: module DATE_START={DATE_START})",
+    )
+    parser.add_argument(
+        "--date-end",
+        default=None,
+        help=f"FinBERT 8-K collection end date (default: module DATE_END={DATE_END})",
+    )
+    parser.add_argument(
         "--lm",
         action="store_true",
         default=False,
@@ -1341,7 +1365,12 @@ def main():
         run_lm_scoring_pipeline(engine, ff_cfg)
         return
 
-    run_sentiment_pipeline(tickers=args.tickers, cpu_only=args.cpu_only)
+    run_sentiment_pipeline(
+        tickers=args.tickers,
+        cpu_only=args.cpu_only,
+        date_start=args.date_start,
+        date_end=args.date_end,
+    )
 
 
 if __name__ == "__main__":

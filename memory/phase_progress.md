@@ -346,3 +346,116 @@ Sharpe *rose* — a zero-vol cash artifact, not improved selection.
 - `models/ensemble_models.pkl` — restored to Sprint 5 (expanding) state
   from `ensemble_models_sprint5.pkl`; `data/processed/` scores + weights
   regenerated to match (spot-check: test Sharpe 0.9898, exact).
+
+---
+
+## Sprint 7 — 2025-26 true-holdout validation (PASS)
+
+Status: **COMPLETE** as of 2026-07-04. Verdict from
+`backtests/results/sprint7_results.json`: **PASS** — the frozen Sprint 5
+production model (78 folds, `effective_train_end=2024-07-31`) was
+scored over 2025-01 → 2026-06 with no retraining and no design changes.
+This window is now **burn-once spent**: no future experiment may tune
+against 2025-26.
+
+### What ran
+- Data refresh (Sprint 7 Prompt 2): prices/macro/FinBERT all advanced
+  to ~2026-07-02. FinBERT backlog of 893 rows (2025 + partial 2026)
+  scored on MPS in ~28 min. Authorized minimal fix to
+  `src/strategies/fundamental/sentiment_pipeline.py`: parameterized
+  `run_sentiment_pipeline(date_start, date_end)` + CLI flags; module
+  DATE_START/DATE_END constants preserved as defaults.
+- CPI backfill (Prompt 3 Part A0): `scripts/backfill_cpi.py` upserts
+  CPIAUCSL Jan 2026 → today into `macro_series['cpi']`; no
+  `settings.yaml` edit (CPIAUCSL is not in the FRED config). Sprint 8
+  can reuse.
+- Factor + feature-matrix rebuild through 2026-06-30 via the existing
+  `--start/--end` CLI paths. TimesFM 135 month-ends, 0 failures.
+  Feature matrix: 6981 rows × 25 cols (23 features + date + ticker);
+  `fcf_yield` correctly absent (all-NaN → dropped upstream).
+- Frozen scoring (Prompt 3 Part B): new `src/live/scorer.py` — loads
+  the last fold from `models/ensemble_models.pkl`, reindexes X on the
+  pickle's own `feature_names` (guards the fcf_yield landmine), fills
+  NaN 0.0 mirroring `_prepare_xy`, asserts shape/order before
+  `predict_proba[:,1]`. Emits an AUDIT log line with model fold_date,
+  effective_train_end, n_features.
+- Holdout run (Prompt 3 Part C): new `scripts/run_holdout.py` runs
+  scoring → `build_portfolio_weights(scores_df=, prices=)` → vectorbt
+  from_orders + SPY benchmark. All clamped `TIMELINE["test_end"]`
+  loaders bypassed by **injection**, not by editing `portfolio_builder`
+  or `backtest`. Regime gate fires automatically inside
+  `build_portfolio_weights` on the injected date range.
+
+### Pre-committed rule (fixed 2026-07-04, before any holdout metric was computed)
+
+> PASS = holdout Sharpe (2025-01-01 → 2026-06-30, daily returns,
+> mean/std·√252, computed from the strategy equity curve) > 0.600.
+> Anything else = FAIL.
+
+### Numbers (recomputed from the saved equity CSV)
+
+| Metric                    | Sprint 0 test | Sprint 5 test | Sprint 7 holdout | SPY holdout |
+|---------------------------|---------------|---------------|-------------------|-------------|
+| Sharpe                    | 0.783         | 0.990         | **1.016**         | 1.007       |
+| CAGR                      | +13.81%       | +18.27%       | **+32.89%**       | +17.95%     |
+| Sortino                   | —             | —             | **1.473**         | 1.319       |
+| Max Drawdown              | —             | −21.35%       | **−27.03%**       | −18.76%     |
+| Total return              | —             | —             | **+49.33%**       | +26.21%     |
+| Window                    | 2023-2024     | 2023-2024     | **2025-01-31 → 2026-06-30** | same |
+
+Rule test: 1.016 > 0.600 → **PASS** (clears by +0.416).
+
+### What drove it (from `sprint7_results.json`)
+- **Regime skew:** 15/18 months and 290/354 days were RISK_ON (1.2×
+  leverage); only 1 RISK_OFF month (2026-03-31). Leverage was on
+  for 82% of the window, amplifying both return and drawdown.
+- **May 2026 concentration:** +28.7% strategy vs +5.3% SPY that
+  single month is roughly half the total-return excess. Verdict
+  distance is highly sensitive to that month holding.
+- **Under-diversification:** breadth mean 14.9 (median 14) vs 24.6
+  in-sample — only 5 of 18 months hit the 20-name target.
+
+### Verdict (verbatim from `sprint7_results.json`)
+
+> Holdout Sharpe = 1.0160 clears the pre-committed 0.600 threshold by
+> +0.416. What drove it: (1) the frozen last-fold model kept generating
+> usable rank information in 2025-26 despite the 18-month training gap,
+> (2) a heavily RISK_ON regime (290/354 days at 1.2× leverage)
+> amplified positive selection, and (3) a single anomalous month —
+> May 2026 at +28.7% strategy vs +5.3% SPY — contributed roughly half
+> the excess-return gap. The strategy's Sharpe advantage over SPY
+> (Δ +0.009) is thin; the +23-pt total-return excess is what would
+> show up in P&L. What this proves: the Sprint 5 factor stack + graded
+> regime gate did not decay to noise on a genuine out-of-sample window.
+> What it does NOT prove: statistical robustness — 18 months puts a
+> ~±0.30 standard error on the Sharpe estimate, and any of the caveats
+> (TimesFM data-vintage leak, May 2026 concentration, regime skew) is
+> individually sufficient to explain the excess. Treat this as a green
+> flag to enter Sprint 8's paper-trading phase, not as evidence of a
+> validated edge.
+
+### Burn-once note
+2025-01-01 → 2026-06-30 is now **spent** as a holdout. No future
+experiment may tune against this window. Post-2026-06-30 months become
+the next available holdout as they accrue.
+
+### Artefacts (Sprint 7)
+- `src/live/__init__.py`, `src/live/scorer.py` — new module; frozen
+  last-fold scorer with X.shape[1]==23 assertion and column-order check
+  against the pickle's own `feature_names`.
+- `scripts/run_holdout.py` — new; runs the holdout via injection, no
+  edits to `portfolio_builder` / `backtest`. Reused by Sprint 8.
+- `scripts/backfill_cpi.py` — new; CPIAUCSL → `macro_series['cpi']`
+  because CPIAUCSL is not in `settings.yaml`'s FRED list. Idempotent.
+- `src/strategies/fundamental/sentiment_pipeline.py` — 31/2 diff:
+  `run_sentiment_pipeline(date_start, date_end)` + CLI flags.
+  Backward-compatible (module DATE_START/DATE_END constants preserved
+  as defaults).
+- `backtests/results/sprint7_results.json` — tracked; verdict + all
+  metrics + informational context + seven caveats + provenance.
+- `backtests/results/holdout_2025_26_equity.csv` — **tracked**
+  (force-added despite `*.csv` gitignore) — 354 rows × 2 cols
+  (strategy, benchmark) for reproducibility.
+- `models/ensemble_models.pkl` — **untouched**; the whole sprint's
+  point is that the model stayed frozen.
+

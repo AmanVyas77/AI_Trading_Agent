@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-07-04T17:20:00-04:00",
+  "sprint": "Sprint 7 — 2025-26 true-holdout validation (frozen Sprint 5 model)",
+  "pre_committed_rule": "PASS = holdout Sharpe (2025-01-01 → 2026-06-30, daily returns, mean/std·√252, computed from the strategy equity curve) > 0.600. Anything else = FAIL.",
+  "holdout": {
+    "sharpe": 1.0160,
+    "cagr": 0.3289,
+    "sortino": 1.4729,
+    "max_dd": -0.2703,
+    "total_return": 0.4933,
+    "start": "2025-01-31",
+    "end": "2026-06-30",
+    "n_days": 354,
+    "note_on_start": "Equity curve begins 2025-01-31 (first month-end rebalance in the 2025-01-01 → 2026-06-30 window); scores trade forward, so daily returns exist only from 2025-02-03 onward."
+  },
+  "spy_holdout": {
+    "sharpe": 1.0072,
+    "cagr": 0.1795,
+    "sortino": 1.3188,
+    "max_dd": -0.1876,
+    "total_return": 0.2621,
+    "start": "2025-01-31",
+    "end": "2026-06-30",
+    "n_days": 354
+  },
+  "informational": {
+    "vs_test_sharpe_0990": "Holdout Sharpe 1.016 vs 2023-24 test Sharpe 0.990 (+0.03) and Sprint 0 test 0.783 (+0.23) — the 2025-26 window did not degrade risk-adjusted performance despite an 18-month gap past the last training fold.",
+    "vs_spy_sharpe": "Strategy Sharpe 1.016 vs SPY 1.007 (Δ +0.009) — Sharpe advantage is thin; absolute-return excess is +23.1 percentage points (strategy +49.3% vs SPY +26.2%).",
+    "breadth_mean_2025_26": 14.89,
+    "breadth_median_2025_26": 14,
+    "breadth_min_2025_26": 2,
+    "breadth_max_2025_26": 53,
+    "breadth_vs_production_mean_246": "Holdout breadth mean 14.9 is materially below the 24.6 in-sample mean; only 5 of 18 months hit the 20-name target. The strategy ran under-diversified on most months, which likely drove both the wide monthly return dispersion and the -27% max drawdown.",
+    "months_empty": 0,
+    "regime_monthly_2025_26": {"RISK_ON": 15, "NEUTRAL": 2, "RISK_OFF": 1},
+    "regime_daily_days_2025_26": {"1.2x_RISK_ON": 290, "1.0x_NEUTRAL": 43, "0.5x_RISK_OFF": 21},
+    "regime_note": "82% of the holdout was RISK_ON (1.2× leverage). This amplifies both the +49% return and the -27% drawdown; a more RISK_OFF regime would have produced different absolute numbers.",
+    "monthly_strategy_vs_spy_pct": [
+      {"month": "2025-02", "strategy": -5.05, "spy": -1.27, "excess": -3.78},
+      {"month": "2025-03", "strategy": -9.51, "spy": -5.57, "excess": -3.94},
+      {"month": "2025-04", "strategy": -0.22, "spy": -0.87, "excess": 0.64},
+      {"month": "2025-05", "strategy": 8.74, "spy": 6.28, "excess": 2.45},
+      {"month": "2025-06", "strategy": 4.44, "spy": 5.14, "excess": -0.70},
+      {"month": "2025-07", "strategy": -1.07, "spy": 2.30, "excess": -3.38},
+      {"month": "2025-08", "strategy": -11.97, "spy": 2.05, "excess": -14.02},
+      {"month": "2025-09", "strategy": 13.15, "spy": 3.56, "excess": 9.59},
+      {"month": "2025-10", "strategy": 9.53, "spy": 2.38, "excess": 7.14},
+      {"month": "2025-11", "strategy": -1.64, "spy": 0.20, "excess": -1.84},
+      {"month": "2025-12", "strategy": -0.27, "spy": 0.08, "excess": -0.35},
+      {"month": "2026-01", "strategy": 2.48, "spy": 1.47, "excess": 1.01},
+      {"month": "2026-02", "strategy": -4.58, "spy": -0.86, "excess": -3.71},
+      {"month": "2026-03", "strategy": -3.56, "spy": -4.94, "excess": 1.38},
+      {"month": "2026-04", "strategy": 8.39, "spy": 10.51, "excess": -2.12},
+      {"month": "2026-05", "strategy": 28.69, "spy": 5.26, "excess": 23.43},
+      {"month": "2026-06", "strategy": 10.13, "spy": -1.03, "excess": 11.16}
+    ],
+    "monthly_result_note": "Result is bimodal: seven months of >±3% excess (five negative, four positive after signing corrections in 2025-08 and 2026-05). May 2026's +23.4-pt excess alone drives ~half of the total-return gap vs SPY — the verdict is sensitive to whether that single month held or not.",
+    "timesfm_caveat": "The TimesFM 1M return forecast is one of the 23 features. TimesFM's pretrained checkpoint has an unknown data-vintage cutoff and may already have seen macro/price patterns from the 2025 calendar year; treat 2025 rows of `timesfm_pred_return_1m` as a possible subtle-leak channel. Not remediable in this sprint — flag only.",
+    "march_2026_tie_note": "2026-03-31 breadth of 53 is genuine LightGBM leaf saturation, not a data collapse. Feature vectors were verified distinct (53/53 unique) with 30 distinct predicted probabilities in [0.539, 0.622]; five names tied at the top-leaf value 0.622146. Top-N holdings for that month were tie-broken by pandas' stable sort."
+  },
+  "model_provenance": {
+    "pickle": "models/ensemble_models.pkl",
+    "backup": "models/ensemble_models_sprint5.pkl (md5-identical)",
+    "folds": 78,
+    "last_fold_date": "2024-11-30",
+    "effective_train_end": "2024-07-31",
+    "n_features": 23,
+    "scorer": "src/live/scorer.py — uses folds[-1]'s model + feature_names; reindex→fillna(0.0)→predict_proba[:,1]"
+  },
+  "caveats": [
+    "TimesFM pretraining vintage: the checkpoint's cutoff is undocumented and may cover 2024-2025 macro/price patterns, so `timesfm_pred_return_1m` values on 2025+ holdout rows are a possible leak channel. Flagged, not remediable in Sprint 7.",
+    "18-month window has limited statistical power for Sharpe: 353 daily observations put the standard error on Sharpe at roughly ±0.30 (Bailey-López de Prado approximation) — the 1.016 point estimate is not statistically distinguishable from the 0.600 threshold at 95% confidence. The verdict is applied deterministically per the pre-committed rule, but the caveat matters for narrative claims.",
+    "Under-diversified holdings: mean 14.9 names vs the 20-name target on 13 of 18 months, driven by portfolio_builder's MIN_SCORE=0.52 gate combined with the sub-in-sample breadth of the frozen model. This amplifies month-to-month variance.",
+    "Monthly performance concentration: +49.3% total return is dominated by May 2026 (+28.7% single-month strategy return, +23.4% excess vs SPY). Removing that single month drops holdout total return to roughly +16% and would materially change the verdict distance.",
+    "Regime skew: 15/18 months RISK_ON (1.2× leverage) and only 1 RISK_OFF (2026-03-31) — leverage was on for the bulk of the window and materially inflates both realised return and drawdown vs the un-gated model.",
+    "CPI: backfilled 2026-01 → 2026-05 via scripts/backfill_cpi.py (Sprint 7 Prompt 3 Part A0); Apr-Jun 2026 rows use real CPI data. No ffill placeholder in the holdout window.",
+    "Universe: 54 tickers in universe.csv; portfolio_builder aligned to 52 tickers over the holdout window (2 dropped for missing prices)."
+  ],
+  "verdict": "PASS",
+  "verdict_notes": "Holdout Sharpe = 1.0160 clears the pre-committed 0.600 threshold by +0.416. What drove it: (1) the frozen last-fold model kept generating usable rank information in 2025-26 despite the 18-month training gap, (2) a heavily RISK_ON regime (290/354 days at 1.2× leverage) amplified positive selection, and (3) a single anomalous month — May 2026 at +28.7% strategy vs +5.3% SPY — contributed roughly half the excess-return gap. The strategy's Sharpe advantage over SPY (Δ +0.009) is thin; the +23-pt total-return excess is what would show up in P&L. What this proves: the Sprint 5 factor stack + graded regime gate did not decay to noise on a genuine out-of-sample window. What it does NOT prove: statistical robustness — 18 months puts a ~±0.30 standard error on the Sharpe estimate, and any of the caveats (TimesFM data-vintage leak, May 2026 concentration, regime skew) is individually sufficient to explain the excess. Treat this as a green flag to enter Sprint 8's paper-trading phase, not as evidence of a validated edge."
+}
