@@ -434,6 +434,188 @@ def export_ensemble() -> None:
         logger.warning("regime_attribution.json not found — skipping")
 
 
+# ── Dashboard v2 exports (ensemble equity, sprints, holdings, breadth, regime) ─
+
+RESULTS_DIR = ROOT / "backtests" / "results"
+
+# Portfolio-construction constants mirrored from portfolio_builder (module-level
+# there too; keep in sync manually — do NOT move to settings.yaml).
+V2_TOP_N = 20
+V2_MIN_SCORE = 0.52
+
+
+def export_ensemble_performance() -> None:
+    """ensemble_performance.json — Sprint 5 production equity as cumulative %.
+
+    Source: backtests/results/ensemble_timesfm_{train,test}_equity.csv
+    (tracked Sprint 5 artifacts). The two CSVs are non-overlapping slices
+    of ONE continuous backtest run (train ends 2022-12-30 at 164,513.79;
+    test opens 2023-01-03 at 163,921.10 — the gap is the real overnight
+    return), so a plain concat reproduces sprint5 total_return_full
+    129.0257% exactly. Do NOT rescale the test segment.
+    """
+    train_p = RESULTS_DIR / "ensemble_timesfm_train_equity.csv"
+    test_p = RESULTS_DIR / "ensemble_timesfm_test_equity.csv"
+    if not (train_p.exists() and test_p.exists()):
+        logger.warning("ensemble_timesfm_*.csv not found — skipping ensemble_performance")
+        return
+
+    train = pd.read_csv(train_p, index_col=0, parse_dates=True)
+    test = pd.read_csv(test_p, index_col=0, parse_dates=True)
+
+    out = {}
+    for col in ("strategy", "benchmark"):
+        if col not in train.columns or col not in test.columns:
+            continue
+        full = pd.concat([train[col], test[col]])
+        out[col] = (full / full.iloc[0] - 1.0) * 100.0
+
+    df = pd.DataFrame(out).round(3)
+    records = [
+        {"date": d.strftime("%Y-%m-%d"),
+         **{k: (None if pd.isna(v) else v) for k, v in row.items()}}
+        for d, row in df.iterrows()
+    ]
+    payload = {
+        "test_start": TIMELINE["test_start"],
+        "source": "ensemble_timesfm_train/test_equity.csv (Sprint 5 production)",
+        "data": records,
+    }
+    _write_json(payload, "ensemble_performance.json")
+
+
+def export_sprints() -> None:
+    """sprints.json — sprint comparison table + verbatim verdicts.
+
+    Sources: sprint5_results.json (holds sprint0/sprint4/sprint5 blocks),
+    sprint4_recal_results.json, sprint6_results.json. Verdict notes are
+    copied VERBATIM — the dashboard must not paraphrase experiment records.
+    """
+    s5_p = RESULTS_DIR / "sprint5_results.json"
+    s6_p = RESULTS_DIR / "sprint6_results.json"
+    if not s5_p.exists():
+        logger.warning("sprint5_results.json not found — skipping sprints export")
+        return
+    s5 = json.loads(s5_p.read_text())
+    s6 = json.loads(s6_p.read_text()) if s6_p.exists() else {}
+
+    sprints = [
+        {
+            "id": "sprint0", "name": "Sprint 0", "change": "Frozen baseline",
+            "verdict": "BASELINE", "metrics": s5.get("sprint0_baseline", {}),
+            "verdict_notes": "Frozen Sprint 0 baseline (commit c0f9c65). Full-period "
+                             "Sharpe 0.600 from ensemble_baseline_stats.csv; the 0.721 "
+                             "in baseline_metrics.json is train-period only.",
+        },
+        {
+            "id": "sprint4", "name": "Sprint 4", "change": "Graded regime gate",
+            "verdict": "FAIL", "metrics": s5.get("sprint4_graded_gate", {}),
+            "verdict_notes": "",
+        },
+        {
+            "id": "sprint5", "name": "Sprint 5", "change": "+TimesFM 23rd feature",
+            "verdict": "PASS", "metrics": s5.get("sprint5_timesfm", {}),
+            "verdict_notes": s5.get("verdict_notes", ""),
+        },
+    ]
+    s4_p = RESULTS_DIR / "sprint4_recal_results.json"
+    if s4_p.exists():
+        try:
+            s4 = json.loads(s4_p.read_text())
+            # In sprint4_recal_results.json the long verdict PARAGRAPH lives
+            # under "verdict" (unlike sprint5/6 where "verdict" is PASS/FAIL
+            # and the paragraph is "verdict_notes"); its "notes" key is a dict.
+            v = s4.get("verdict", "")
+            if isinstance(v, str) and len(v) > 20:
+                sprints[1]["verdict_notes"] = v
+        except Exception:
+            pass
+    if s6:
+        verdict = s6.get("verdict", "")
+        sprints.append({
+            "id": "sprint6", "name": "Sprint 6", "change": "Rolling 36-month window",
+            "verdict": "REFUTED" if verdict == "FAIL" else verdict,
+            "metrics": s6.get("sprint6_rolling", {}),
+            "verdict_notes": s6.get("verdict_notes", ""),
+            "fold_diagnostics": s6.get("fold_diagnostics", {}),
+            "checks": s6.get("checks", {}),
+        })
+
+    _write_json({"generated_from": ["sprint4_recal_results.json", "sprint5_results.json",
+                                    "sprint6_results.json"],
+                 "sprints": sprints}, "sprints.json")
+
+
+def export_regime() -> None:
+    """regime.json — monthly regime multipliers for band shading + chips."""
+    try:
+        import sys
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from src.strategies.ensemble.regime_gate import get_historical_regime_multipliers
+    except Exception as exc:
+        logger.warning(f"regime_gate import failed ({exc}) — skipping regime export")
+        return
+
+    mults = get_historical_regime_multipliers(TIMELINE["train_start"], TIMELINE["test_end"])
+    label = {0.5: "RISK_OFF", 1.0: "NEUTRAL", 1.2: "RISK_ON"}
+    records = [
+        {"month": d.strftime("%Y-%m"), "multiplier": float(v),
+         "label": label.get(round(float(v), 2), "NEUTRAL")}
+        for d, v in mults.items()
+    ]
+    _write_json(records, "regime.json")
+
+
+def export_holdings_and_breadth() -> None:
+    """holdings.json + breadth.json — from production ensemble scores.
+
+    Mirrors portfolio_builder selection: score > V2_MIN_SCORE, top V2_TOP_N,
+    equal weight. Breadth = names above threshold per month (production /
+    Sprint 5 state; the Sprint 6 rolling comparison numbers live in
+    sprints.json fold_diagnostics).
+    """
+    scores_path = ROOT / "data" / "processed" / "ensemble_scores.parquet"
+    if not scores_path.exists():
+        logger.warning("ensemble_scores.parquet not found — skipping holdings/breadth")
+        return
+    df = pd.read_parquet(scores_path)
+    df["date"] = pd.to_datetime(df["date"])
+
+    # Universe metadata for names/industries
+    meta = {}
+    uni_p = EXPORT_DIR / "universe.json"
+    if uni_p.exists():
+        try:
+            for row in json.loads(uni_p.read_text()):
+                meta[row["ticker"]] = {"name": row.get("name", ""),
+                                       "industry": row.get("industry", "")}
+        except Exception:
+            pass
+
+    holdings = {}
+    breadth = []
+    for date, g in df.groupby("date"):
+        month = date.strftime("%Y-%m")
+        above = g[g["ensemble_score"] > V2_MIN_SCORE]
+        breadth.append({"month": month, "names_above_threshold": int(len(above))})
+        sel = above.nlargest(min(V2_TOP_N, len(above)), "ensemble_score")
+        n = len(sel)
+        holdings[month] = [
+            {"ticker": r["ticker"],
+             "name": meta.get(r["ticker"], {}).get("name", r["ticker"]),
+             "industry": meta.get(r["ticker"], {}).get("industry", ""),
+             "score": round(float(r["ensemble_score"]), 4),
+             "weight": round(1.0 / n, 4) if n else 0.0}
+            for _, r in sel.iterrows()
+        ]
+
+    _write_json({"top_n": V2_TOP_N, "min_score": V2_MIN_SCORE, "months": holdings},
+                "holdings.json")
+    _write_json({"min_score": V2_MIN_SCORE, "max_positions": V2_TOP_N, "data": breadth},
+                "breadth.json")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run_export() -> None:
@@ -452,6 +634,12 @@ def run_export() -> None:
     export_universe()
     export_performance(engine)
     export_ensemble()
+
+    # Dashboard v2 exports
+    export_ensemble_performance()
+    export_sprints()
+    export_regime()
+    export_holdings_and_breadth()
 
     logger.info("Dashboard data export complete ✓")
 

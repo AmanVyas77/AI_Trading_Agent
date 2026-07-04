@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Quant Research Platform — Dashboard v2 (ensemble, sprints, regime, breadth)">
+  <title>Quant Research Platform — Dashboard v2</title>
+
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg:#0d1117; --surface:#161b22; --surface-alt:#1c2333; --border:#30363d;
+      --text:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --accent-alt:#7ee787;
+      --red:#f85149; --orange:#d29922; --purple:#bc8cff; --cyan:#39d2c0;
+      --green:#3fb950; --radius:8px; --radius-lg:12px;
+      --shadow:0 2px 12px rgba(0,0,0,0.4); --mono:'JetBrains Mono',monospace;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);
+      color:var(--text);min-height:100vh;line-height:1.5}
+    ::-webkit-scrollbar{width:8px;height:8px}
+    ::-webkit-scrollbar-track{background:var(--bg)}
+    ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+    select option{background:var(--surface-alt);color:var(--text)}
+    code{font-family:var(--mono);color:var(--accent);font-size:0.92em}
+    code.good{color:var(--green)} code.bad{color:var(--red)}
+
+    /* Header */
+    .header{position:sticky;top:0;z-index:100;background:linear-gradient(135deg,#161b22,#1c2333);
+      border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;
+      justify-content:space-between;backdrop-filter:blur(12px)}
+    .header-left{display:flex;align-items:center;gap:16px}
+    .logo{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--accent-alt));
+      border-radius:var(--radius);display:flex;align-items:center;justify-content:center;
+      font-size:18px;font-weight:700;color:var(--bg);flex-shrink:0}
+    .header h1{font-size:18px;font-weight:600;letter-spacing:-0.3px}
+    .header h1 span{color:var(--accent)}
+    .header-right{display:flex;gap:24px;align-items:center}
+    .stamp-label{color:var(--muted);text-transform:uppercase;font-size:10px;
+      letter-spacing:.5px;font-weight:600;margin-right:8px}
+    .stamp{color:var(--accent);font-family:var(--mono);font-size:11px}
+    .phase-chip{background:rgba(88,166,255,.12);border:1px solid rgba(88,166,255,.3);
+      border-radius:20px;padding:4px 14px;font-size:11px;color:var(--accent);font-weight:500}
+
+    /* Tabs */
+    .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);
+      padding:0 32px;overflow-x:auto}
+    .tab-btn{background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);
+      font-family:'Inter',sans-serif;font-size:13px;font-weight:500;padding:14px 24px;
+      cursor:pointer;letter-spacing:.3px;text-transform:uppercase;transition:all .2s ease;
+      white-space:nowrap}
+    .tab-btn.active{background:rgba(88,166,255,.08);border-bottom-color:var(--accent);
+      color:var(--accent)}
+    .tab-panel{display:none;padding:28px 32px}
+    .tab-panel.active{display:block}
+
+    h2.section{font-size:15px;font-weight:600;margin-bottom:20px;display:flex;
+      align-items:center;gap:10px}
+    h2.section::before{content:'';width:4px;height:20px;border-radius:2px;
+      background:linear-gradient(180deg,var(--accent),var(--accent-alt))}
+
+    .panel{background:var(--surface);border:1px solid var(--border);
+      border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow)}
+
+    /* Stat cards */
+    .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+    .stat-card{background:var(--surface-alt);border:1px solid var(--border);
+      border-top:3px solid var(--accent);border-radius:var(--radius-lg);padding:20px;
+      box-shadow:var(--shadow)}
+    .stat-label{font-size:10px;font-weight:600;text-transform:uppercase;
+      letter-spacing:.6px;color:var(--muted);margin-bottom:10px}
+    .stat-value{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1}
+    .stat-value .unit{font-size:18px;color:var(--muted);font-weight:400}
+    .stat-delta{font-size:11px;margin-top:10px;font-family:var(--mono)}
+
+    /* Regime legend */
+    .regime-legend{display:flex;gap:20px;align-items:center;padding:10px 18px;
+      background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      margin-bottom:16px;flex-wrap:wrap;row-gap:8px}
+    .regime-legend .lbl{font-size:11px;font-weight:600;color:var(--muted);
+      text-transform:uppercase;letter-spacing:.5px}
+    .legend-item{display:flex;align-items:center;gap:7px;font-size:12px}
+    .swatch{width:14px;height:14px;border-radius:3px}
+    .legend-item .mult{font-family:var(--mono);font-weight:600}
+
+    /* Sprint table */
+    #sprint-table table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+    #sprint-table thead tr{background:var(--surface-alt);border-bottom:2px solid var(--border)}
+    #sprint-table th{padding:16px 20px;text-align:center;font-weight:600}
+    #sprint-table th.metric-col{text-align:left;color:var(--muted);font-size:10px;
+      text-transform:uppercase;letter-spacing:.6px;min-width:130px}
+    .sprint-col-head{display:flex;flex-direction:column;align-items:center;gap:5px}
+    .sprint-name{font-size:14px}
+    .sprint-change{font-size:11px;color:var(--muted);font-weight:400}
+    .pill{border:1px solid;border-radius:10px;padding:2px 9px;font-size:10px;
+      font-weight:600;letter-spacing:.3px;white-space:nowrap}
+    #sprint-table td{padding:13px 20px;border-bottom:1px solid rgba(48,54,61,.5)}
+    #sprint-table td.metric-col{color:var(--muted);font-size:12px;white-space:nowrap}
+    #sprint-table td.num{text-align:center;font-family:var(--mono);font-size:13px}
+    #sprint-table td.best{font-weight:600;background:rgba(63,185,80,.08)}
+    .fn-star{color:var(--orange);font-size:9px}
+    .table-footnote{padding:10px 20px;border-top:1px solid var(--border);font-size:11px;
+      color:var(--muted);line-height:1.5}
+
+    /* Verdict notes */
+    .notes-label{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.6px;margin:24px 0 10px}
+    .note-card{background:var(--surface);border:1px solid var(--border);
+      border-radius:10px;overflow:hidden;margin-bottom:8px}
+    .note-toggle{width:100%;display:flex;justify-content:space-between;align-items:center;
+      padding:14px 20px;background:none;border:none;color:var(--text);
+      font-family:'Inter',sans-serif;font-size:13px;font-weight:500;cursor:pointer;
+      text-align:left;gap:12px}
+    .note-title{display:flex;align-items:center;gap:10px}
+    .note-arrow{color:var(--muted);font-size:12px}
+    .note-body{padding:16px 20px;border-top:1px solid rgba(48,54,61,.5)}
+    .note-body p{font-family:var(--mono);font-size:11px;color:var(--muted);
+      line-height:1.75;white-space:pre-wrap}
+
+    /* Holdings */
+    .holdings-bar{display:flex;align-items:center;justify-content:space-between;
+      margin-bottom:16px;flex-wrap:wrap;gap:12px}
+    .holdings-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    #regime-chip{border:1px solid;border-radius:20px;padding:4px 14px;font-size:11px;
+      font-weight:600;font-family:var(--mono)}
+    #month-select{background:var(--surface-alt);border:1px solid var(--border);
+      border-radius:var(--radius);color:var(--text);padding:7px 14px;
+      font-family:var(--mono);font-size:12px;cursor:pointer;outline:none}
+    .sector-legend{display:flex;gap:20px;margin-bottom:16px;flex-wrap:wrap}
+    .sector-legend .legend-item{font-size:11px;color:var(--muted)}
+    .sector-legend .swatch{width:10px;height:10px;border-radius:2px}
+    #holdings-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+    .holding-card{background:var(--surface-alt);border:1px solid var(--border);
+      border-left:3px solid var(--cyan);border-radius:var(--radius-lg);padding:20px}
+    .holding-top{display:flex;justify-content:space-between;align-items:flex-start;
+      margin-bottom:6px}
+    .holding-ticker{font-family:var(--mono);font-size:20px;font-weight:600;
+      color:var(--accent);letter-spacing:-.5px}
+    .holding-weight{background:rgba(126,231,135,.12);border:1px solid rgba(126,231,135,.3);
+      border-radius:6px;padding:2px 7px;font-family:var(--mono);font-size:11px;
+      color:var(--accent-alt);white-space:nowrap}
+    .holding-name{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;
+      text-overflow:ellipsis;margin-bottom:12px}
+    .holding-score-row{display:flex;align-items:center;gap:8px}
+    .score-track{flex:1;height:4px;background:rgba(48,54,61,.9);border-radius:2px;
+      overflow:hidden;min-width:0}
+    .score-bar{height:4px;border-radius:2px}
+    .holding-score{font-family:var(--mono);font-size:12px}
+    .empty-state{grid-column:1/-1;text-align:center;padding:64px 20px;color:var(--muted);
+      font-size:14px;background:var(--surface);border:1px dashed var(--border);
+      border-radius:var(--radius-lg)}
+    .empty-icon{font-size:28px;margin-bottom:10px}
+
+    /* Breadth caption card */
+    .caption-card{background:var(--surface-alt);border:1px solid var(--border);
+      border-left:3px solid var(--orange);border-radius:10px;padding:18px 20px;margin-top:20px}
+    .caption-title{font-size:11px;font-weight:600;color:var(--orange);
+      text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+    .caption-card p{font-size:13px;line-height:1.65}
+
+    .chart-box{padding:4px}
+
+    @media (max-width:1100px){
+      .stat-grid{grid-template-columns:repeat(2,1fr)}
+      #holdings-grid{grid-template-columns:repeat(2,1fr)}
+    }
+    @media (max-width:640px){
+      .tab-panel{padding:20px 16px}
+      .stat-grid,#holdings-grid{grid-template-columns:1fr}
+      .header{padding:12px 16px}
+    }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-left">
+    <div class="logo">Q</div>
+    <h1><span>Quant</span> Research Platform</h1>
+  </div>
+  <div class="header-right">
+    <div><span class="stamp-label">Last Export</span><span class="stamp" id="export-stamp">—</span></div>
+    <div class="phase-chip">Phase 4b — Ensemble + TimesFM</div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="performance">📈 Performance</button>
+  <button class="tab-btn" data-tab="sprints">📊 Sprint History</button>
+  <button class="tab-btn" data-tab="holdings">💼 Holdings</button>
+  <button class="tab-btn" data-tab="breadth">📶 Breadth</button>
+  <button class="tab-btn" data-tab="macro">🌐 Macro &amp; Regime</button>
+</nav>
+
+<!-- TAB 1: PERFORMANCE -->
+<section class="tab-panel active" id="performance">
+  <div class="stat-grid" id="stat-cards"></div>
+
+  <div class="regime-legend">
+    <span class="lbl">Regime gate</span>
+    <div class="legend-item"><div class="swatch" style="background:rgba(248,81,73,.35);border:1px solid rgba(248,81,73,.5)"></div>
+      risk-off <span class="mult" style="color:var(--red)">0.5×</span></div>
+    <div class="legend-item"><div class="swatch" style="background:rgba(48,54,61,.9);border:1px solid var(--border)"></div>
+      neutral <span class="mult" style="color:var(--muted)">1.0×</span></div>
+    <div class="legend-item"><div class="swatch" style="background:rgba(63,185,80,.35);border:1px solid rgba(63,185,80,.5)"></div>
+      risk-on <span class="mult" style="color:var(--green)">1.2×</span></div>
+    <span style="font-size:11px;color:var(--muted)">All series rebased to ensemble inception (2018-07)</span>
+  </div>
+
+  <div class="panel"><div id="perf-chart" class="chart-box" style="height:460px"></div></div>
+</section>
+
+<!-- TAB 2: SPRINT HISTORY -->
+<section class="tab-panel" id="sprints">
+  <h2 class="section">Sprint Experiment Comparison</h2>
+  <div class="panel" style="margin-bottom:0">
+    <div style="overflow-x:auto" id="sprint-table"></div>
+    <div class="table-footnote" id="sprint-footnote"></div>
+  </div>
+  <div class="notes-label">Verdict Notes (verbatim from results JSONs)</div>
+  <div id="verdict-notes"></div>
+</section>
+
+<!-- TAB 3: HOLDINGS -->
+<section class="tab-panel" id="holdings">
+  <div class="holdings-bar">
+    <h2 class="section" style="margin-bottom:0">Top-20 Holdings</h2>
+    <div class="holdings-controls">
+      <div id="regime-chip">NEUTRAL · 1.0×</div>
+      <select id="month-select"></select>
+    </div>
+  </div>
+  <div class="sector-legend">
+    <div class="legend-item"><div class="swatch" style="background:var(--cyan)"></div>Semiconductors</div>
+    <div class="legend-item"><div class="swatch" style="background:var(--accent)"></div>Software</div>
+    <div class="legend-item"><div class="swatch" style="background:var(--purple)"></div>Networking / Security</div>
+    <div class="legend-item"><div class="swatch" style="background:var(--orange)"></div>Other</div>
+  </div>
+  <div id="holdings-grid"></div>
+</section>
+
+<!-- TAB 4: BREADTH -->
+<section class="tab-panel" id="breadth">
+  <h2 class="section">Signal Breadth — Names Scoring Above Threshold</h2>
+  <div class="panel"><div id="breadth-chart" class="chart-box" style="height:400px"></div></div>
+  <div class="caption-card">
+    <div class="caption-title">Why Breadth Matters</div>
+    <p id="breadth-caption"></p>
+  </div>
+</section>
+
+<!-- TAB 5: MACRO & REGIME -->
+<section class="tab-panel" id="macro">
+  <h2 class="section">Macro Regime Indicators</h2>
+  <div class="panel"><div id="macro-chart" class="chart-box" style="height:560px"></div></div>
+</section>
+
+<script src="dashboard_v2.js"></script>
+</body>
+</html>

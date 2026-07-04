@@ -87,13 +87,13 @@ READ-ONLY — do not edit or install anything.
 Use the project venv for all python: .venv/bin/python
 
 Your tasks:
-1. Git state: run git log --oneline -5 and git status --short. Confirm
-   HEAD is at or after commit 70c3dff ("Sprint 5: add TimesFM…"). List
-   any untracked or modified files — they must NOT be included in
-   Sprint 6 commits.
-   [COMPLETED 2026-07-03 — recon confirmed HEAD 70c3dff and found the
-   src/strategies/ensemble/ tree untracked; the PRE-STEP below was added
-   in response. Prompts 1 and PRE-STEP status: Prompt 1 done.]
+1. Git state: from the INNER repo root ("Ai Trading Agent/" — verify
+   with git rev-parse --show-toplevel), run git log --oneline -5 and
+   git status --short. Confirm HEAD is at or after 65bc3bb ("Sprint 5").
+   List any untracked or modified files.
+   [COMPLETED 2026-07-03 — first run hit the outer Stock_Project repo
+   (HEAD 70c3dff) and false-flagged the ensemble tree as untracked;
+   resolved: inner repo at 65bc3bb is authoritative. See header rules.]
 
 2. Read src/strategies/ensemble/target_builder.py lines 295-352
    (walk_forward_folds) and src/strategies/ensemble/model_trainer.py in
@@ -365,6 +365,21 @@ feature_matrix, or target_builder — features/labels are unchanged):
   .venv/bin/python -m src.strategies.ensemble.portfolio_builder
   .venv/bin/python -m src.strategies.ensemble.backtest
 
+BREADTH DIAGNOSTIC (added after Prompt 3 — smaller train sets compress
+predicted probabilities toward 0.5, so fewer names may clear
+portfolio_builder's MIN_SCORE=0.52 threshold; a breadth change is a
+CONFOUND, not ranking skill):
+- After score_generator runs, compare per-month counts of tickers with
+  ensemble_score > 0.52 between the new ensemble_scores.parquet and the
+  Sprint 5 run (portfolio_builder's log prints "above 0.52: NN" per
+  month — also recoverable by scoring with the backup pickle if needed).
+- Report: mean monthly count above threshold (rolling vs Sprint 5), any
+  months with < 10 selected, any months with 0 selected. Include these
+  in fold_diagnostics as "mean_names_above_threshold", "months_below_10",
+  "months_empty". If breadth collapsed (mean count down > 30%), say so
+  prominently in verdict_notes — the Sharpe comparison is then partly a
+  concentration effect and the verdict interpretation must note it.
+
 Notes:
 - backtest.py writes FIXED filenames (ensemble_sprint3_train_equity.csv,
   ensemble_sprint3_test_equity.csv, ensemble_sprint3_stats.csv in
@@ -430,18 +445,21 @@ with a verdict. Read that file FIRST — the verdict decides which branch
 below applies. Use .venv/bin/python where needed.
 
 COMMON RULES (both branches):
-- The PRE-STEP catch-up commit ("Catch-up: track Sprint 0-5 source
-  tree…") pinned the Sprint 5 source state and is the revert anchor —
-  confirm it exists in git log before committing anything.
+- REPO GUARD first: cd "/Users/aman/Desktop/Stock_Project/Ai Trading
+  Agent"; git rev-parse --show-toplevel must end in "Ai Trading Agent".
+  Never run git from the outer Stock_Project repo; never push or PR it.
+- The PRE-STEP catch-up commit ("Catch-up: sprint notes + memory
+  drift…") is the revert anchor — confirm it exists in git log before
+  committing anything.
 - Commit ONLY Sprint 6 files. git status will still show deliberately
-  excluded paths (data/ dbs and chroma, models/*.pkl, research dirs,
-  .obsidian, backtests/reports/*.html) — do NOT add them.
-- config/settings.yaml carries a KNOWN pre-existing local modification
-  that stays uncommitted. It appearing in git diff is expected. STOP
-  only if its diff differs from the one recorded in the PRE-STEP output
-  (i.e. a Sprint 6 session changed it — that violates the project rule).
+  excluded untracked paths (data/chroma_db/, data/stock_data.db) — do
+  NOT add them.
+- config/settings.yaml must show NO diff in this repo — if it does, a
+  Sprint 6 session edited it (violates the project rule): STOP.
 - Never commit: models/*.pkl, data/processed/*.parquet, .env,
   config/settings.yaml.
+- If git push is rejected non-fast-forward, STOP and report — do NOT
+  force-push (possible outer-repo contamination of the remote).
 - Force-add the three ensemble_rolling_*.csv equity/stats files despite
   the *.csv gitignore (same as Sprint 5 did for ensemble_timesfm_*.csv):
   git add -f backtests/results/ensemble_rolling_*.csv
@@ -485,12 +503,27 @@ IF VERDICT == FAIL
    memory updates (same tracked-file caveat as PASS branch).
    Message: "Sprint 6: rolling 36-month window REFUTED — revert to
    expanding (records in sprint6_results.json)"
-4. In future_ideas.md's refuted-log entry, state the implication
-   explicitly: expanding-window dilution is not the binding constraint;
-   Phase 5 proceeds to the live paper-trading pipeline (Option B), whose
-   known prerequisites are the FinBERT sentiment backlog (stale since
-   2024-12-27), the regime-gate LIMIT-7/staleness fixes, and a live
-   scorer for unlabeled current months.
+4. In future_ideas.md's refuted-log entry, record the ACTUAL finding
+   (updated after Prompt 4 — do not use the older "dilution is not the
+   binding constraint" framing):
+   - Verdict FAIL was driven by BREADTH STARVATION, not proven ranking
+     failure: rolling models compress scores toward 0.5, so the fixed
+     MIN_SCORE=0.52 gate left 14 of ~23 test months with ZERO holdings
+     (cash), forfeiting the 2023-24 rally (test CAGR 14.81% vs 18.27%).
+     Test Sharpe 1.041 "beat" Sprint 5 only as a zero-vol cash artifact.
+   - Therefore: the rolling-window hypothesis is NOT cleanly falsified;
+     the tested configuration (rolling + fixed absolute threshold) is
+     rejected. What WAS confirmed: 2022 DD improved to -26.23% and test
+     max DD to -12.52% (cash months also dodged drawdowns).
+   - Add a new open idea: "Rank-based selection under rolling windows"
+     (top-N by score with no absolute floor, or per-month score
+     z-scoring) — WITH an explicit multiple-testing warning: Sprint 6
+     counts as trial 1; any variant needs its own pre-committed PASS
+     rule; do not iterate variants until one passes. Priority: BELOW
+     the live paper-trading pipeline (Option B), whose prerequisites
+     remain the FinBERT backlog (stale since 2024-12-27), the
+     regime-gate LIMIT-7/staleness fixes, and a live scorer for
+     unlabeled current months.
 
 Output: the branch taken, the exact git log -1 --stat of the commit, the
 push confirmation, and (FAIL branch only) the spot-check result
