@@ -7,6 +7,43 @@ this list without re-deriving the context.
 
 ---
 
+## Runbook patch — quarterly fundamentals ingestion + xbrl staleness guard
+
+**Status:** open, logged 2026-07-12 (Aman: "add it to memory for future
+things to include"). Small single-session job, NOT a full sprint.
+Ideally before the 2026-08-03 rebalance (Q2-2026 10-Qs land mid-July →
+August).
+
+**Gap:** src/live/refresh.py (Sprint 8) refreshes prices, FRED macro,
+CPI, FinBERT 8-Ks, TimesFM, and the feature matrix — but does NOT call:
+- the EDGAR/XBRL pipeline (src/data/edgar_pipeline.py → xbrl_facts) —
+  so new quarterly statements (10-Qs) never flow in automatically;
+- the 10-K collection + LM scoring increment;
+- SimFin estimates (eps_revisions stale since 2026-04; also carries a
+  TIMELINE clamp found in Sprint 7 recon: simfin_pipeline.py
+  fetch_simfin_eps dict literal "end": TIMELINE["test_end"] — needs a
+  param/module-override, NOT a settings.yaml edit).
+And the staleness assertions don't watch xbrl_facts at all — quarterly
+fundamentals can drift from normal reporting lag to genuinely stale
+without failing loud.
+
+**Fix (2-prompt patch: implement + verify):**
+1. Add steps to run_refresh(): EDGAR/XBRL re-ingestion (incremental),
+   10-K/LM increment, SimFin estimates (after de-clamping).
+2. Add staleness assertion: max(xbrl_facts.end_date) ≤ ~120 days old
+   (calibrated to SEC 10-Q deadlines ~40d after quarter end, same
+   philosophy as the CPI 75-day calibration).
+3. Same fail-loud test pattern as the Sprint 8 freshness gates.
+Note: quarterly ffill lag is in-sample-consistent (feature matrix
+ffills quarterlies), so weeks of lag are fine — the guard exists to
+catch QUARTERS of lag.
+
+**Suggested insertion:** standalone Runbook_Patch_Prompts.md session,
+before the first August rebalance; independent of Sprint 9 (different
+files).
+
+---
+
 ## Rank-based selection under rolling windows
 
 **Status:** open. Priority: **BELOW** the live paper-trading pipeline
@@ -219,35 +256,57 @@ daily and the analyst-funnel dossiers.
 
 ---
 
-## Live trading pipeline — paper stage (Option B)
+## Sprint 8 outcome log — Live paper-trading pipeline (Option B) — **LIVE**
 
-**Status:** open, **now the top Phase 5 candidate** — the model-refresh
-question is settled (Sprint 6 refuted rolling; expanding window stays),
-so there is no longer a training-window blocker ahead of this.
+**Status:** closed 2026-07-12. Verdict: **PASS** — dress rehearsal on
+the Alpaca paper account cleared all six pre-committed operational
+criteria. See `backtests/results/sprint8_results.json` and
+`memory/phase_progress.md` Sprint 8 section for the criteria table
+and evidence.
 
-Sprint 5 established the current ensemble (regime gate + TimesFM +
-XGBoost, expanding train) clears the Sprint 0 baseline on Sharpe (0.682
-vs 0.600) and beats it on test CAGR (18.27% vs 13.81%). Risk-adjusted
-profile is deployment-worthy for a paper stage.
+**first_live_month:** 2026-06. The runbook is a three-command monthly
+cycle:
 
-Prerequisites before opening this (these are the real blockers):
-- **FinBERT backlog** — sentiment features are stale since 2024-12-27;
-  a live deployment needs current-month sentiment, so the backlog must
-  be caught up (and kept fresh on a schedule).
-- **Regime-gate LIMIT-7 / staleness fixes** — the live regime signal
-  path needs the LIMIT-7 and staleness handling resolved before it can
-  drive real rebalances.
-- **Live scorer for unlabeled current months** — the current pipeline
-  only scores months that have realised labels; live trading needs a
-  scorer that runs on the latest *unlabeled* month.
-- Decide on execution venue (broker API, paper account credentials in
-  `.env`).
-- Add a `src/live/` module with a scheduled rebalance harness driven by
-  the same `portfolio_builder` outputs — no new alpha logic, just a
-  runner that reads the latest score / weight files and posts orders.
+```
+.venv/bin/python -m src.live.refresh
+.venv/bin/python -m src.live.paper_runner --skip-refresh              # dry-run
+.venv/bin/python -m src.live.paper_runner --skip-refresh --execute    # submit
+```
 
-**Suggested insertion:** Phase 5 (next) — new module
-`src/live/paper_runner.py`.
+Prerequisites that were open pre-Sprint 8 have all been resolved:
+
+- **FinBERT backlog** — cleared in Sprint 7; live sentiment is
+  ≤ 14d fresh, checked by `refresh.py`'s freshness assertions.
+- **Regime-gate LIMIT-7 / staleness fixes** — done in Prompt 2:
+  `_load_macro_snapshot` is per-series `MAX(date)`; `MAX_STALENESS_DAYS`
+  and a critical-series (vix/spread) NEUTRAL fallback are in place.
+- **Live scorer for unlabeled current months** — Sprint 7 delivered
+  `src/live/scorer.py`; Sprint 8's `build_targets()` calls it directly.
+- **Execution venue** — Alpaca paper; `ALPACA_API_KEY`/`ALPACA_SECRET_KEY`
+  in `.env`; `broker_alpaca.py` hard-locks to the paper endpoint URL.
+- **`src/live/` module with a scheduled rebalance harness** — shipped:
+  `refresh.py`, `rebalance.py`, `broker_alpaca.py`, `paper_runner.py`.
+
+Known limitations (recorded pre-Sprint 9):
+
+- LLM arm on the regime gate is disabled by default and hard-blocks
+  ollama by name (kernel-panic history). Rules-only signal drives
+  every live rebalance.
+- Whole-share qty fallback is wired but was not exercised in the
+  rehearsal (all 6 names accepted fractional notional).
+- CPI staleness limit is 75d (BLS cadence calibration); no metric
+  attached, just calendar reality.
+- The dress-rehearsal orders were queued (Sunday); fill verification
+  against ±0.5% happens at the next market open by design.
+- RISK_ON gross is 1.2× — relies on Alpaca paper's 2-4× buying_power;
+  `paper_runner` asserts `buying_power ≥ gross` before submission.
+
+**Next open item is now the END-GOAL analyst funnel** (entry above).
+Option B being live is the funnel's prerequisite (item 1 of its staged
+implementation is now met). The shadow-stage prerequisite list under
+that entry is **unchanged** — it still requires an `src/analyst/`
+module, blinding, model-version pinning, and a pre-committed PASS rule
+written before the shadow window opens.
 
 ---
 

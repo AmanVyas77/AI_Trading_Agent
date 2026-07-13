@@ -32,6 +32,7 @@ import re
 import time
 import logging
 import argparse
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -67,9 +68,12 @@ MODEL_NAME = SENT_CFG.get("model", "ProsusAI/finbert")
 
 EWM_SPAN = 4  # Arratia (2021): smooth over ~4 filing periods
 
-# Date range for filing downloads
+# Date range for filing downloads.
+# DATE_END resolves to today at import time so a live run without
+# --date-end can no longer silently clamp to a hard-coded 2024 cutoff.
+# Callers pass --date-start when running incremental updates.
 DATE_START = "2015-01-01"
-DATE_END = "2024-12-31"
+DATE_END = datetime.now().strftime("%Y-%m-%d")
 
 # SEC rate-limit: ≤10 req/s → 0.15s between calls
 SEC_SLEEP = 0.15

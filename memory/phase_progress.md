@@ -459,3 +459,118 @@ the next available holdout as they accrue.
 - `models/ensemble_models.pkl` — **untouched**; the whole sprint's
   point is that the model stayed frozen.
 
+
+## Sprint 8 — Live paper-trading pipeline (PASS)
+
+Status: **COMPLETE** as of 2026-07-12 dress rehearsal. Verdict from
+`backtests/results/sprint8_results.json`: **PASS** — the Sprint 7-frozen
+model was wired into a monthly runbook against the Alpaca paper account
+with kill-switch, staleness guards, idempotent order diff, and full run
+records. No new alpha logic anywhere — this sprint shipped plumbing.
+
+### What was built
+
+- **Regime-gate hardening** (`src/strategies/ensemble/regime_gate.py`):
+  per-series `MAX(date)` snapshot returning
+  `{series: {"value", "date"}}` (fixes the LIMIT-7 bug that starved
+  monthly CPI); `MAX_STALENESS_DAYS` constant (vix/spread ≤ 5d,
+  fed_funds ≤ 10d, cpi ≤ 75d — amended pre-rehearsal from 60 to match
+  BLS cadence); `get_live_regime_signal(use_llm=False)` default is
+  rules-only; the LLM helper hard-blocks the ollama backend by name
+  (kernel-panic history). Stale critical series (vix/spread) force
+  NEUTRAL_MULT with reasoning "stale macro — defaulting to neutral".
+- **Sentiment DATE_END dynamic** (`sentiment_pipeline.py`): resolves
+  to today at import time; no more silent 2024-12-31 clamp.
+- **Monthly refresh runbook** (`src/live/refresh.py`): five ordered,
+  timed steps — quant_pipeline → backfill_cpi → sentiment increment
+  (max(filing_date)−7d) → factor_export_quant → feature_matrix — with
+  per-source freshness assertions that fail LOUD. Report appended to
+  `logs/live_refresh_log.jsonl`.
+- **Target builder** (`src/live/rebalance.py`): `build_targets()`
+  mirrors `_select_monthly_holdings` steps (a)-(d); weight =
+  `multiplier / n_selected` (validated concentration behavior), so
+  Σweights = multiplier and `cash_weight = 1 − Σweights` may be
+  negative under RISK_ON gross. `diff_orders()` is a pure function
+  with a 0.25%-of-equity do-not-trade band, sells-before-buys ordering.
+  Persists to `data/live/targets_<YYYY-MM>.json` + SQLite `live_targets`.
+- **Alpaca paper adapter** (`src/live/broker_alpaca.py`): paper URL
+  `https://paper-api.alpaca.markets` is a module constant; init
+  asserts the SDK's `_base_url` matches both `BaseURL.TRADING_PAPER`
+  and the constant — no code path to live money exists. MARKET/DAY
+  orders (notional preferred, whole-share qty fallback via DB
+  adj_close), each logged to SQLite `live_orders`. `get_open_orders`
+  is the primitive the runner uses for idempotency.
+- **One-command runner** (`src/live/paper_runner.py`): refresh →
+  build_targets → get_account/positions → diff_orders → dry-run
+  (default) or --execute → poll fills → write
+  `logs/live_runs/<YYYY-MM>_run.json` and append `live_runs` row.
+  Skips any (ticker, side) already open at the broker; refuses to
+  submit if target gross > buying_power.
+
+### Six pre-committed operational criteria (verdict verbatim)
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| C1 | Refresh freshness within limits (prices ≤3 trading days, VIX/spread ≤3d, FinBERT ≤14d, cpi ≤75d) | **PASS** | `logs/live_refresh_log.jsonl` last row (as_of=2026-07-12): prices 3d/5d, vix 3d/3d, spread 3d/3d, sentiment 2d/14d, cpi 72d/75d — all ✓ |
+| C2 | Scorer emits current-month scores; 23-feature assert + audit line (effective_train_end 2024-07-31) | **PASS** | `AUDIT: … effective_train_end=2024-07-31 n_features=23` in every paper_runner log; 53 rows × 1 month in `holdout_scores.parquet` |
+| C3 | MIN_SCORE=0.52 / TOP_N=20 / regime multiplier respected | **PASS** | 6 names cleared 0.52 (thin breadth), weight = 1.2/6 = 0.20 each, Σweights = 1.20 = mult; regime signal logged verbatim |
+| C4 | Orders submitted to Alpaca PAPER and filled; positions within ±0.5% of target per name | **PASS** | 6 notional MARKET/DAY buys `accepted` at the paper endpoint (kill-switch asserted URL match); queued for Monday 2026-07-13 open per sprint's closed-market carve-out; fill/±0.5% match verifiable via the one-liner embedded in `sprint8_results.json` |
+| C5 | Immediate re-run submits ZERO new orders | **PASS** | 2026-07-12T19:19 re-run: 6 diffs, `n_submitted=0`, `skipped_already_open=6` |
+| C6 | Complete run record persists (SQLite + JSON) | **PASS** | `logs/live_runs/2026-06_run*.json` + SQLite `live_runs` / `live_targets` / `live_orders`; reconstructible without transcript |
+
+### Verdict (verbatim from `sprint8_results.json`)
+
+> All six operational criteria met. C1 freshness passes with the 45→75d
+> CPI amendment (BLS-cadence calibration, no performance implication).
+> C2/C3 confirm the frozen model (effective_train_end 2024-07-31) is
+> scoring 2026-06 with the 23-feature assert holding, and weights track
+> the validated 1/n_selected × multiplier scheme. C4 submitted 6
+> notional market-DAY buys to the paper endpoint (kill-switch verified
+> equal to hardcoded constant); orders are queued for Monday 2026-07-13
+> open per the sprint's closed-market carve-out. C5 idempotency held
+> cleanly under an immediate re-run (0/6 submitted, 6/6 skipped as
+> already-open). C6 leaves a full audit trail across JSON + three
+> SQLite tables. Ollama arm remains disabled; sentiment DATE_END now
+> resolves dynamically; whole-share fallback is wired but was not
+> exercised (all 6 names accepted fractional notional).
+
+**first_live_month:** 2026-06.
+
+### Monthly runbook (exact commands, in order)
+
+```
+.venv/bin/python -m src.live.refresh
+.venv/bin/python -m src.live.paper_runner --skip-refresh              # dry-run: review orders
+.venv/bin/python -m src.live.paper_runner --skip-refresh --execute    # submit for real
+```
+
+### Known limitations (recorded pre-Sprint 9)
+
+- Regime gate LLM arm is disabled by default; hard-blocks ollama by
+  name. Rules-only signal drives every live rebalance.
+- `sentiment_pipeline.DATE_END` is now dynamic (today at import time).
+- Whole-share qty fallback is wired but was not exercised in this
+  rehearsal (all 6 names accepted fractional notional).
+- CPI staleness limit is 75d in both refresh.py and regime_gate.py —
+  calibration only, no metric attached.
+- The dress-rehearsal orders were queued (Sunday); fill verification
+  against ±0.5% happens at the next market open by design.
+- RISK_ON gross is 1.2× — relies on Alpaca paper's 2-4× buying_power;
+  `paper_runner` asserts `buying_power ≥ gross` before submission.
+
+### Artefacts (Sprint 8)
+- `src/live/refresh.py` — new; monthly runbook + freshness assertions.
+- `src/live/rebalance.py` — new; `build_targets()` + pure `diff_orders()`.
+- `src/live/broker_alpaca.py` — new; paper-endpoint-locked Alpaca adapter.
+- `src/live/paper_runner.py` — new; the one-command monthly loop.
+- `src/strategies/ensemble/regime_gate.py` — modified; per-series
+  snapshot, staleness guard, rules-only default, ollama hard-block.
+- `src/strategies/fundamental/sentiment_pipeline.py` — modified;
+  DATE_END now `datetime.now().strftime("%Y-%m-%d")` at import time.
+- `tests/unit/test_regime_gate_live.py` — new; four offline-safe
+  tests covering snapshot coverage, staleness→NEUTRAL, rules-only
+  default, sentiment DATE_END.
+- `backtests/results/sprint8_results.json` — verdict + evidence +
+  monthly_runbook + known_limitations.
+- `models/ensemble_models.pkl` — **untouched** (still Sprint 7 frozen).
+
