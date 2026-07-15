@@ -3,32 +3,48 @@ Live monthly data refresh — the runbook that gets the DB and parquet
 artefacts current enough for a live rebalance.
 
 Steps, in order (each timed and logged):
-    1. quant_pipeline           (prices + FRED)
-    2. backfill_cpi             (monthly CPI; not in the routine FRED list)
-    3. sentiment increment      (FinBERT on 8-Ks; --date-start = max
-                                 filing_date − 7d for overlap safety)
-    4. factor_export_quant      (--start 2015-01-01 --end <last completed
-                                 month-end>; TimesFM inside)
-    5. feature_matrix           (same window)
+    1.  quant_pipeline           (prices + FRED)
+    2.  backfill_cpi             (monthly CPI; not in the routine FRED list)
+    3.  sentiment increment      (FinBERT on 8-Ks; --date-start = max
+                                  filing_date − 7d for overlap safety)
+    3b. edgar_xbrl               (EDGAR company-facts pull for the
+                                  universe; per-ticker upsert is idempotent)
+    3c. lm_10k_increment         (collect new 10-Ks, then LM-score;
+                                  the scoring LEFT-JOIN skips already-
+                                  scored filings so this is cheap when
+                                  no new 10-K has landed)
+    3d. simfin_estimates         (analyst EPS + revision momentum;
+                                  now uses today at import as --end)
+    3e. factor_export_fundamental (regenerates the fundamental parquet
+                                  the feature_matrix reads; without this
+                                  3b-3d change nothing downstream)
+    4.  factor_export_quant      (--start 2015-01-01 --end <last completed
+                                  month-end>; TimesFM inside)
+    5.  feature_matrix           (same window)
 
-After the five steps, this module asserts freshness against Sprint 8
-Rule 1 limits and raises on any violation — a stale series must fail
-LOUD rather than silently ship into rebalance.
+After the steps, this module asserts freshness against Sprint 8 Rule 1
+limits and raises on any violation — a stale series must fail LOUD
+rather than silently ship into rebalance.
 
 Freshness limits (calendar days, hard-coded to avoid a yaml round-trip):
     prices             ≤ 3 trading days       (allow one long weekend)
     vix                ≤ 3 days
     yield_spread_10y2y ≤ 3 days
     sentiment_scores   ≤ 14 days
-    cpi                ≤ 45 days (release lag)
+    cpi                ≤ 75 days (release lag)
+    xbrl_facts         ≤ 120 days (10-Q filing deadline ~40 d after
+                                    quarter end + a full quarter of
+                                    lag before the next print)
+    eps_revisions      ≤ 120 days (same quarterly cadence)
 
 CLI
 ---
     python -m src.live.refresh [--as-of YYYY-MM-DD] [--skip step,...]
 
 Skippable step names: quant_pipeline, backfill_cpi, sentiment,
-quant_factors, feature_matrix. Useful when a single component is under
-maintenance; freshness assertions still run.
+edgar_xbrl, lm_10k_increment, simfin_estimates,
+factor_export_fundamental, quant_factors, feature_matrix. Useful when a
+single component is under maintenance; freshness assertions still run.
 """
 from __future__ import annotations
 
@@ -61,18 +77,27 @@ logger = logging.getLogger(__name__)
 # CPI is reference-month dated (May print → 05-01) and BLS releases
 # with a ~2-3-week lag → age oscillates 40-75d in normal operation.
 # Amended from 45 → 75 (Sprint 8 Prompt 4 FIX 2, calibration only).
+# xbrl_facts + eps_revisions: 10-Q deadline is ~40 days after quarter
+# end and the next report is ~90 days after that, so a healthy series
+# never exceeds ~120 days without a gap.
 STALENESS_LIMITS = {
     "prices": 5,               # 3 trading days ~= 5 calendar days worst case
     "vix": 3,
     "yield_spread_10y2y": 3,
     "sentiment_scores": 14,
     "cpi": 75,
+    "xbrl_facts": 120,
+    "eps_revisions": 120,
 }
 
 _ALL_STEPS = (
     "quant_pipeline",
     "backfill_cpi",
     "sentiment",
+    "edgar_xbrl",
+    "lm_10k_increment",
+    "simfin_estimates",
+    "factor_export_fundamental",
     "quant_factors",
     "feature_matrix",
 )
@@ -148,6 +173,12 @@ def _collect_freshness(as_of: date) -> dict:
         max_sent = conn.execute(
             text("SELECT MAX(filing_date) FROM sentiment_scores")
         ).fetchone()[0]
+        max_xbrl = conn.execute(
+            text("SELECT MAX(end_date) FROM xbrl_facts")
+        ).fetchone()[0]
+        max_eps_rev = conn.execute(
+            text("SELECT MAX(date) FROM eps_revisions")
+        ).fetchone()[0]
         macro_rows = conn.execute(text(
             "SELECT series_name, MAX(date) FROM macro_series "
             "WHERE value IS NOT NULL GROUP BY series_name"
@@ -163,6 +194,8 @@ def _collect_freshness(as_of: date) -> dict:
             "yield_spread_10y2y": {"max_date": per_series.get("yield_spread_10y2y")},
             "sentiment_scores": {"max_date": max_sent},
             "cpi": {"max_date": per_series.get("cpi")},
+            "xbrl_facts": {"max_date": max_xbrl},
+            "eps_revisions": {"max_date": max_eps_rev},
         },
     }
 
@@ -219,6 +252,82 @@ def _step_sentiment(as_of: date) -> dict:
     logger.info("Sentiment increment window: %s → %s", start, end)
     run_sentiment_pipeline(date_start=start, date_end=end)
     return {"date_start": start, "date_end": end}
+
+
+def _step_edgar_xbrl() -> dict:
+    """Full-per-ticker XBRL pull. INSERT OR REPLACE keeps it idempotent."""
+    from src.data.edgar_pipeline import run_edgar_pipeline
+    run_edgar_pipeline()
+    return {}
+
+
+def _unscored_10k_count() -> int:
+    """Cheap LEFT JOIN: count 10-K filings not yet in lm_sentiment_scores."""
+    engine = create_engine(DB_URL, echo=False)
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT COUNT(*) FROM edgar_10k_filings f "
+            "LEFT JOIN lm_sentiment_scores s "
+            "  ON f.ticker = s.ticker AND f.filing_date = s.filing_date "
+            "WHERE s.ticker IS NULL"
+        )).fetchone()
+    return int(row[0] or 0)
+
+
+def _step_lm_10k_increment() -> dict:
+    """
+    Collect + score 10-K filings only if there is unscored work. The
+    collection call is a full-window SEC pull, so we gate on the cheap
+    LEFT-JOIN count first; the scoring pass itself is already a no-op
+    when nothing is unscored.
+    """
+    from src.strategies.fundamental.sentiment_pipeline import (
+        _get_engine, run_lm_collection_pipeline, run_lm_scoring_pipeline,
+    )
+    import yaml as _yaml
+    from datetime import datetime as _dt
+
+    engine = _get_engine()
+    with open(ROOT / "config" / "settings.yaml") as f:
+        cfg = _yaml.safe_load(f)
+    ff_cfg = cfg["fundamental_factors"]
+
+    from src.universe.screener import load_universe
+    uni = load_universe(ROOT / "data" / "universe" / "universe.csv")
+    tickers = uni["ticker"].tolist()
+
+    start_year = int(str(cfg["timeline"]["train_start"])[:4])
+    end_year = _dt.now().year
+    logger.info(
+        "LM 10-K collection window: %d-%d for %d tickers",
+        start_year, end_year, len(tickers),
+    )
+    run_lm_collection_pipeline(tickers, start_year, end_year, engine, ff_cfg)
+
+    unscored = _unscored_10k_count()
+    logger.info("Unscored 10-K filings after collection: %d", unscored)
+    if unscored == 0:
+        return {"collected_new": 0, "scored": 0}
+    run_lm_scoring_pipeline(engine, ff_cfg)
+    return {"scored": unscored}
+
+
+def _step_simfin_estimates() -> dict:
+    """Analyst EPS pull + revision momentum. DATE_END = today at import."""
+    from src.data.simfin_pipeline import run_simfin_finra_pipeline
+    # skip_finra=True: FINRA short-volume is Sprint 8's separate concern.
+    run_simfin_finra_pipeline(skip_finra=True)
+    return {}
+
+
+def _step_factor_export_fundamental(month_end: date) -> dict:
+    argv = [
+        str(ROOT / ".venv" / "bin" / "python"),
+        "-m", "src.strategies.ensemble.factor_export_fundamental",
+        "--start", "2015-01-01",
+        "--end", month_end.isoformat(),
+    ]
+    return _run_subprocess_step("factor_export_fundamental", argv)
 
 
 def _step_quant_factors(month_end: date) -> dict:
@@ -293,6 +402,11 @@ def run_refresh(
     _run("quant_pipeline", _step_quant_pipeline)
     _run("backfill_cpi", _step_backfill_cpi)
     _run("sentiment", lambda: _step_sentiment(as_of_date))
+    _run("edgar_xbrl", _step_edgar_xbrl)
+    _run("lm_10k_increment", _step_lm_10k_increment)
+    _run("simfin_estimates", _step_simfin_estimates)
+    _run("factor_export_fundamental",
+         lambda: _step_factor_export_fundamental(month_end))
     _run("quant_factors", lambda: _step_quant_factors(month_end))
     _run("feature_matrix", lambda: _step_feature_matrix(month_end))
 

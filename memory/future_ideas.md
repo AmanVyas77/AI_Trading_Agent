@@ -9,7 +9,37 @@ this list without re-deriving the context.
 
 ## Runbook patch — quarterly fundamentals ingestion + xbrl staleness guard
 
-**Status:** open, logged 2026-07-12 (Aman: "add it to memory for future
+**Status: DONE 2026-07-14** — implemented in Runbook_Patch_Prompts (2
+prompts). refresh.py now runs edgar_xbrl, lm_10k_increment (LEFT-JOIN
+gated no-op when nothing new), simfin_estimates (de-clamped fetch), and
+factor_export_fundamental between sentiment and quant_factors; new
+120-day guards on xbrl_facts + eps_revisions. First-time run pulled
+xbrl_facts max 2026-06-11 → 2026-06-17, eps_revisions 2026-04-03 →
+2026-05-31, and rebuilt the fundamental parquet through Q2-2026 (46/54
+tickers gained a 2026-Q2 period end). Idempotent on re-run (row counts
+==). See [[runbook-patch-2026-07]] for full outcome.
+
+**Follow-up (small, not urgent): LM collection PK-skip.** The 10-K
+collection loop re-downloads all ~430 filings from SEC each refresh
+(23 min) because it doesn't skip already-stored (ticker, filing_date)
+PKs before hitting the network. Adding a pre-check against
+edgar_10k_filings would cut lm_10k_increment from ~23 min to seconds
+when there's nothing new. Not a correctness issue — INSERT OR REPLACE
+keeps state consistent — just wasted bandwidth.
+
+**Follow-up (Aman decision): SimFin API key.** Prompt 2 provenance
+check confirmed `analyst_estimates.source = 'seasonal_random_walk'`
+for every row from 2006-2026 → historical training data was ALWAYS
+synthetic. `.env` has `SIMFIN_API_KEY=` with an empty value. Filling
+it in would INTRODUCE drift going forward (real API rows for 2026+
+vs synthetic history), so either leave empty (status quo — matches
+training) or fill and backfill history in one shot.
+
+---
+
+## Original ask (kept for provenance)
+
+Logged 2026-07-12 (Aman: "add it to memory for future
 things to include"). Small single-session job, NOT a full sprint.
 Ideally before the 2026-08-03 rebalance (Q2-2026 10-Qs land mid-July →
 August).

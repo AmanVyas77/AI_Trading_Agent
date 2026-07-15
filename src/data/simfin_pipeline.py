@@ -50,6 +50,14 @@ DB_URL = f"sqlite:///{DB_PATH}"
 TIMELINE = CFG["timeline"]
 FF_CFG = CFG["fundamental_factors"]
 
+# Date range for Simfin EPS pulls.
+# DATE_END resolves to today at import time so a live refresh without an
+# explicit --end can no longer silently clamp to the settings.yaml
+# timeline.test_end cutoff (mirrors the sentiment_pipeline fix from
+# Sprint 8 Prompt 4).
+DATE_START = "2015-01-01"
+DATE_END = datetime.now().strftime("%Y-%m-%d")
+
 
 # ── Database setup ────────────────────────────────────────────────────────────
 
@@ -129,10 +137,21 @@ def check_simfin_coverage(tickers: list[str], api_key: str) -> float:
     return coverage
 
 
-def fetch_simfin_eps(ticker: str, api_key: str) -> pd.DataFrame:
+def fetch_simfin_eps(
+    ticker: str,
+    api_key: str,
+    start: str = DATE_START,
+    end: str = DATE_END,
+) -> pd.DataFrame:
     """
     Pull quarterly EPS actuals from Simfin.
-    Returns DataFrame with columns: fiscal_period, eps_actual
+    Returns DataFrame with columns: fiscal_period, eps_actual.
+
+    start / end default to the module DATE_START / DATE_END (today at
+    import time) so an explicit window is only needed when back-filling
+    a historical slice. The previous default clamped `end` to
+    settings.yaml timeline.test_end (2024-12-31), silently dropping any
+    2025+ quarters returned by the API.
     """
     headers = {"Authorization": f"api-key {api_key}"}
     url = f"{SIMFIN_BASE}/companies/statements/compact"
@@ -140,8 +159,8 @@ def fetch_simfin_eps(ticker: str, api_key: str) -> pd.DataFrame:
         "ticker": ticker,
         "statements": "pl",
         "period": "quarterly",
-        "start": TIMELINE["train_start"],
-        "end": TIMELINE["test_end"],
+        "start": start,
+        "end": end,
     }
     try:
         r = requests.get(url, headers=headers, params=params, timeout=15)
@@ -204,6 +223,8 @@ def fetch_and_compute_sue(
     api_key: Optional[str],
     engine,
     fallback_threshold: float = 0.70,
+    start: str = DATE_START,
+    end: str = DATE_END,
 ) -> None:
     """
     For each ticker:
@@ -214,7 +235,7 @@ def fetch_and_compute_sue(
     for ticker in tickers:
         eps_df = pd.DataFrame()
         if api_key:
-            eps_df = fetch_simfin_eps(ticker, api_key)
+            eps_df = fetch_simfin_eps(ticker, api_key, start=start, end=end)
             time.sleep(0.3)
 
         if eps_df.empty:
@@ -432,6 +453,8 @@ def run_simfin_finra_pipeline(
     tickers: Optional[list[str]] = None,
     skip_finra: bool = False,
     skip_simfin: bool = False,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
 ) -> None:
     import os
     from src.universe.screener import load_universe
@@ -442,14 +465,20 @@ def run_simfin_finra_pipeline(
         uni = load_universe(ROOT / "data" / "universe" / "universe.csv")
         tickers = uni["ticker"].tolist()
 
+    start = start or DATE_START
+    end = end or DATE_END
+
     api_key = os.getenv("SIMFIN_API_KEY")
     if not api_key:
         logger.warning("SIMFIN_API_KEY not set — will use seasonal random walk fallback for SUE")
 
     if not skip_simfin:
-        logger.info(f"Computing SUE for {len(tickers)} tickers…")
-        fallback_threshold = FF_CFG["earnings_surprise"].get("fallback_threshold", 0.70)
-        fetch_and_compute_sue(tickers, api_key, engine, fallback_threshold)
+        logger.info(f"Computing SUE for {len(tickers)} tickers  window={start}→{end}")
+        fallback_threshold = FF_CFG.get("earnings_surprise", {}).get("fallback_threshold", 0.70)
+        fetch_and_compute_sue(
+            tickers, api_key, engine, fallback_threshold,
+            start=start, end=end,
+        )
         compute_eps_revision_momentum(tickers, engine)
 
     if not skip_finra:
@@ -474,10 +503,22 @@ if __name__ == "__main__":
     parser.add_argument("--tickers", nargs="+")
     parser.add_argument("--skip-finra", action="store_true")
     parser.add_argument("--skip-simfin", action="store_true")
+    parser.add_argument(
+        "--start",
+        default=None,
+        help=f"Simfin EPS pull start date (default: module DATE_START={DATE_START})",
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        help=f"Simfin EPS pull end date (default: module DATE_END={DATE_END} = today)",
+    )
     args = parser.parse_args()
 
     run_simfin_finra_pipeline(
         tickers=args.tickers,
         skip_finra=args.skip_finra,
         skip_simfin=args.skip_simfin,
+        start=args.start,
+        end=args.end,
     )

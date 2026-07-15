@@ -574,3 +574,100 @@ records. No new alpha logic anywhere — this sprint shipped plumbing.
   monthly_runbook + known_limitations.
 - `models/ensemble_models.pkl` — **untouched** (still Sprint 7 frozen).
 
+---
+
+## Runbook patch (2026-07)
+
+**Motivation.** Sprint 8 shipped `refresh.py` but only wired the quant-
+side sources; new 10-Qs, new 10-Ks, and analyst-estimate updates never
+flowed into the DB automatically, and `factor_export_fundamental` was
+never re-run — so `feature_matrix` at each new month-end kept ffilling
+the last known fundamentals forward. Freshness gates covered prices /
+macro / sentiment / CPI but did not watch quarterly fundamentals at
+all, so lag could reach quarters silently.
+
+**Change set** (two files only — models untouched, portfolio logic
+untouched, live scorer/rebalance/paper_runner untouched):
+
+- `src/live/refresh.py` — added four steps between the FinBERT
+  increment and the quant factor export:
+  - **3b. edgar_xbrl** — `run_edgar_pipeline()`, full-per-ticker XBRL
+    pull, INSERT OR REPLACE keeps it idempotent (~40 s for 54 tickers).
+  - **3c. lm_10k_increment** — always re-runs the 10-K collection loop
+    (SEC download re-hits every filing), but the LM scoring pass is
+    gated by an inline LEFT-JOIN unscored-count so it no-ops when
+    there's nothing new. Collection itself is the big-cost side-effect
+    of this design; see future_ideas for the PK-skip follow-up.
+  - **3d. simfin_estimates** — `run_simfin_finra_pipeline(skip_finra=
+    True)`, now honours module-level `DATE_END` (today at import)
+    instead of the settings.yaml `timeline.test_end` clamp that was
+    silently dropping every 2025+ quarter.
+  - **3e. factor_export_fundamental** — subprocess call, `--start
+    2015-01-01 --end <last-completed-month-end>`. Without this the
+    3b/3c/3d writes would not reach the feature matrix.
+  Also: two new named-series entries in `_ALL_STEPS`,
+  `STALENESS_LIMITS`, `_collect_freshness`.
+
+- `src/data/simfin_pipeline.py` — added `DATE_START` / `DATE_END`
+  module constants (mirror of the sentiment_pipeline fix from Sprint 8
+  Prompt 4), threaded `start` / `end` params through `fetch_simfin_eps`
+  → `fetch_and_compute_sue` → `run_simfin_finra_pipeline` → CLI.
+  Also swapped `FF_CFG["earnings_surprise"]` (pre-existing KeyError —
+  that config sub-block doesn't exist) for `.get("earnings_surprise",
+  {})` — one-line defensive fix, same file, same defaults (0.70
+  fallback threshold).
+
+**New staleness limits (calendar days).** Two entries alongside the
+existing five in `STALENESS_LIMITS`:
+
+- `xbrl_facts ≤ 120` — 10-Q SEC deadline is ~40 days after quarter
+  end; the next quarterly print is ~90 days after that, so a healthy
+  series never exceeds ~120 days without a gap. Same "calibration
+  only, no metric attached" philosophy as CPI's 75-day limit.
+- `eps_revisions ≤ 120` — same quarterly cadence (SUE is a
+  per-quarter score; revisions inherit the fiscal-period grid).
+
+Both raise a named-series `RuntimeError` via the existing
+`_assert_freshness` — verified by mutating a spoof report to 130 days
+and confirming the raise.
+
+**Provenance finding (recorded, decision pending).**
+`analyst_estimates.source` is `'seasonal_random_walk'` for **every
+row from 2006 to 2026** — the SimFin API path has never actually
+returned data (`.env` has `SIMFIN_API_KEY=` with an empty value; the
+fallback always fires). Training and live therefore MATCH — both use
+the synthetic seasonal-random-walk-on-XBRL-EPS approximation. Filling
+in the API key would introduce drift going forward (real API rows
+for 2026+ vs synthetic history); the safer choice is to leave the
+key empty until a one-shot API backfill is planned. Recorded in
+future_ideas as a Follow-up.
+
+**Verification.**
+- Data flow proof: for MU (fiscal Q2 end 2026-05-28) and ORCL (Q2
+  end 2026-05-31), the ensemble_feature_matrix 2026-06-30 row flipped
+  from the ffilled Q1 values (visible on 2026-04-30 / 2026-05-31
+  rows) to the true Q2 values — piotroski_f MU −0.879 → +0.521,
+  ORCL −0.318 → +0.121; gross_profitability MU +0.318 → +1.943
+  (z-scored).
+- Staleness guard: 130-day mutation on xbrl_facts + eps_revisions
+  both raise with the named-series error format.
+- Idempotency: second run kept counts identical (xbrl_facts 5,899 ==,
+  edgar_10k_filings 430 ==, lm_sentiment_scores 430 ==,
+  analyst_estimates 5,899 ==, eps_revisions 2,614 ==). Unscored 10-K
+  count = 0 on the second pass → LM scoring correctly no-op'd.
+- Live-path safety: `md5(models/ensemble_models.pkl)` unchanged vs
+  `models/ensemble_models_sprint5.pkl`; `score_months('2026-06-30',
+  '2026-06-30')` returns 53 tickers × 1 month cleanly; only file
+  changed under `src/live/` is `refresh.py`.
+- Test suite: 16 passed, 2 failed — the 2 failures are pre-existing
+  `test_factors.py` schema mismatches (no new failures).
+
+**Cost.** First run end-to-end ~55 min (heavy hitters:
+`lm_10k_increment` ~23 min because collection re-downloads every 10-K
+via SEC, `quant_factors` ~26 min with TimesFM). Idempotent second run
+of the four new steps only: ~14 min (dominated again by the LM
+collection re-download).
+
+**Not touched.** `models/`, `src/live/{scorer,rebalance,broker_alpaca,
+paper_runner}.py`, portfolio logic, `config/settings.yaml`, `.env`.
+
