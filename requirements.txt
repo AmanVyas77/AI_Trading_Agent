@@ -30,6 +30,7 @@ vectorbt>=0.26.1
 xgboost>=2.0.0
 scikit-learn>=1.4.0
 shap>=0.44.0          # feature importance / explainability
+hmmlearn>=0.3.0       # discrete HMM for Markov exit layer (Andrade 2017)
 
 # ── NLP / FinBERT ────────────────────────────────────────────
 transformers>=4.38.0
