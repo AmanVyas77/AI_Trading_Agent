@@ -22,23 +22,38 @@ Assumptions (explicit)
   - Andrade DHMMs retrained monthly per ticker with fixed random_state=42.
     Reproducibility of the Sharpe numbers is preferred over avoiding one
     seed's local optimum — no seed sweep in the monthly loop.
-  - K = 0.01 flat transaction-cost approximation (loose; refine later).
+  - K = K_fraction × entry_price (REV 4 fix A): a FIXED dollar transaction cost
+    per position, not the flat K=0.01 of REV 3. K_fraction = 0.001 (0.1%).
+  - entry_price (backtest simplification): the first close of the ~250d
+    calibration lookback window ending at month_end — a stable proxy for the
+    position's cost basis at the start of the calibration period. A future LIVE
+    wiring MUST replace this with the actual broker cost basis of the held
+    position; the first-close proxy is only defensible for a diagnostic.
   - rho = 0.03 risk-free assumption (≈ 2025-26 avg 3M T-bill).
   - Ignoring slippage, dividends, position-sizing. This diagnoses the exit
     SIGNAL alone.
   - Equal-weight book (1/n). When a ticker is exited its weight goes to cash
     (return 0); it is NOT redistributed to survivors.
 
-Scale caveat (read the attribution before trusting the hard-stop path)
-----------------------------------------------------------------------
-  Zhang's paper uses K≈0.01 with prices near 1. Real prices here are ~$100+.
-  Under K=0.01/rho=0.03, Case II only arises when the calibrated uptick rate
-  f1 < rho = 0.03 (a weak/declining name), and there x*_0 = rho·K/(rho−f1) is
-  ~0.03 — far below any real share price — so a Case II name hard-stops on the
-  first trading day. Most names calibrate to Case I (f1 > 0.03) where the daily
-  hard-stop never fires. Expect the hard-stop path to differ from baseline only
-  on the handful of names that calibrate to Case II. This is a K/rho scale
-  artifact, documented so the diagnostic is read correctly.
+Scale note (REV 4 — why the hard-stop can now fire on real names)
+-----------------------------------------------------------------
+  REV 3 passed a flat K=0.01 (paper-scale) against ~$100 prices, so Case II
+  x*_0 = rho·K/(rho−f1) collapsed to ~cents and a Case II name hard-stopped on
+  the first trading day (or the condition degenerated to a price-independent
+  constant — Opus's Prompt-2 flag). REV 4 references K to entry_price, so
+  x*_0 = rho·(K_fraction·entry_price)/(rho−f1) is a genuine dollar LEVEL the
+  live price crosses. Case I names (f1 > rho) still never hard-stop; Case II
+  names now trigger only when the live price actually breaches x*_0. Report the
+  hard-stop trigger count to see how often that happens on this slice.
+
+Regime gate (REV 4 fix B)
+-------------------------
+  The Andrade STRONG_SELL override is suppressed when the cached live-regime
+  multiplier > NEUTRAL_MULT (a RISK_ON tape). get_live_regime_signal() has no
+  as-of parameter, so every (ticker, month) calibration caches the SAME current
+  regime — the "current regime as of run time" approximation. Suppression is
+  therefore all-or-nothing across the window depending on today's macro; the
+  summary reports the suppression count so the effect is visible.
 
 Usage
 -----
@@ -62,12 +77,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))  # allow `python scripts/…` without install
 
 from src.exit.exit_manager import (  # noqa: E402
+    DEFAULT_K_FRACTION,
     calibrate_for_month,
     daily_hard_stop,
     monthly_exit_review,
 )
 from src.live.scorer import score_months  # noqa: E402
 from src.strategies.ensemble.portfolio_builder import MIN_SCORE, TOP_N  # noqa: E402
+from src.strategies.ensemble.regime_gate import NEUTRAL_MULT  # noqa: E402
 with open(ROOT / "config" / "settings.yaml") as f:
     _CFG = yaml.safe_load(f)
 DB_PATH = ROOT / _CFG["data"]["paths"]["db"]
@@ -75,8 +92,14 @@ HOLDOUT_SCORES = ROOT / "data" / "processed" / "holdout_scores.parquet"
 LOG_DIR = ROOT / "logs"
 
 RHO = 0.03
-K = 0.01
+# REV 4: transaction cost is now K_fraction × entry_price (a fixed dollar amount
+# per position), computed inside calibrate_for_month — not a flat K=0.01. We pass
+# K_fraction explicitly for auditability; it mirrors exit_manager.DEFAULT_K_FRACTION.
+K_FRACTION = DEFAULT_K_FRACTION  # 0.001 = 0.1% of entry price
 CALIB_LOOKBACK = 250
+
+# REV 3 Sharpe numbers (commit 4a2a699) — the diagnostic FAIL we are re-testing.
+REV3_SHARPE = {"baseline": 1.5871, "experimental": 1.0783, "hard_stop": 1.5871}
 
 logger = logging.getLogger("backtest_exit_layer")
 
@@ -138,6 +161,9 @@ def run_backtest(start: str, end: str) -> dict:
     rows: list[dict] = []          # per-month path returns
     trigger_rows: list[dict] = []  # per-month trigger_source attribution
     big_moves: list[dict] = []     # |monthly return| > 5% highlights
+    suppression_rows: list[dict] = []  # per-month Andrade-suppressed-by-regime count
+    k_abs_values: list[float] = []     # every K_absolute used (for distribution)
+    hard_stop_rows: list[dict] = []    # per-month hard-stop trigger count
 
     for i, me in enumerate(month_ends[:-1]):
         me = pd.Timestamp(me)
@@ -154,6 +180,8 @@ def run_backtest(start: str, end: str) -> dict:
 
         base_rets, exp_rets, hs_rets = [], [], []
         cnt = {"zhang": 0, "andrade": 0, "both": 0, "none": 0}
+        suppressed = 0   # Andrade STRONG_SELLs suppressed by RISK_ON regime
+        hs_fired = 0     # hard-stop SELL triggers this month
 
         for t in tickers:
             p0 = _price_on_or_before(wide, t, me)
@@ -164,8 +192,18 @@ def run_backtest(start: str, end: str) -> dict:
 
             # ── calibrate ONCE, reuse for both monthly + daily decisions ──
             closes_df = _ticker_closes(wide, t)
+            # entry_price = first close of the ~250d calibration window ending at
+            # me (cost-basis proxy for the diagnostic — see header). Mirrors the
+            # window calibrate_for_month slices internally.
+            window = closes_df.loc[closes_df.index <= me].iloc[-CALIB_LOOKBACK:]
+            entry_price = float(window["close"].iloc[0]) if not window.empty else float("nan")
             try:
-                calib = calibrate_for_month(t, me, closes_df, CALIB_LOOKBACK)
+                calib = calibrate_for_month(
+                    t, me, closes_df,
+                    entry_price=entry_price,
+                    K_fraction=K_FRACTION,
+                    calibration_lookback=CALIB_LOOKBACK,
+                )
             except ValueError as exc:
                 logger.warning("%s %s: calibration skipped (%s)", me.date(), t, exc)
                 base_rets.append(ret_full)
@@ -173,8 +211,14 @@ def run_backtest(start: str, end: str) -> dict:
                 hs_rets.append(ret_full)
                 continue
 
+            k_abs_values.append(calib.K_absolute)
+            # A STRONG_SELL that the regime gate suppressed (RISK_ON tape).
+            if (calib.andrade_signal.action == "STRONG_SELL"
+                    and calib.regime_signal["multiplier"] > NEUTRAL_MULT):
+                suppressed += 1
+
             # ── monthly experimental review ──
-            review = monthly_exit_review(calib, p0, rho=RHO, K=K)
+            review = monthly_exit_review(calib, p0, rho=RHO)
             cnt[review.trigger_source] += 1
             exp_ret = 0.0 if review.action == "SELL" else ret_full
 
@@ -185,9 +229,10 @@ def run_backtest(start: str, end: str) -> dict:
             ]
             hs_ret = ret_full
             for day, day_close in day_prices.items():
-                hs = daily_hard_stop(calib, float(day_close), rho=RHO, K=K)
+                hs = daily_hard_stop(calib, float(day_close), rho=RHO)
                 if hs.action == "SELL":
                     hs_ret = float(day_close) / p0 - 1.0
+                    hs_fired += 1
                     break
 
             base_rets.append(ret_full)
@@ -215,24 +260,38 @@ def run_backtest(start: str, end: str) -> dict:
             "n_held": n,
         })
         trigger_rows.append({"month": me.date().isoformat(), **cnt})
+        suppression_rows.append({"month": me.date().isoformat(), "suppressed": suppressed})
+        hard_stop_rows.append({"month": me.date().isoformat(), "hs_fired": hs_fired})
         logger.info(
             "%s  n=%2d  base=%+.4f  exp=%+.4f  hs=%+.4f  "
-            "[zhang=%d andrade=%d both=%d]",
+            "[zhang=%d andrade=%d both=%d]  suppressed=%d  hs_fired=%d",
             me.date(), n, base_m, exp_m, hs_m,
-            cnt["zhang"], cnt["andrade"], cnt["both"],
+            cnt["zhang"], cnt["andrade"], cnt["both"], suppressed, hs_fired,
         )
 
     ret_df = pd.DataFrame(rows).set_index("month") if rows else pd.DataFrame()
     trig_df = pd.DataFrame(trigger_rows).set_index("month") if trigger_rows else pd.DataFrame()
+    supp_df = pd.DataFrame(suppression_rows).set_index("month") if suppression_rows else pd.DataFrame()
+    hs_df = pd.DataFrame(hard_stop_rows).set_index("month") if hard_stop_rows else pd.DataFrame()
 
     sharpe = {
         "baseline": _annualized_sharpe(ret_df["baseline"]) if not ret_df.empty else float("nan"),
         "experimental": _annualized_sharpe(ret_df["experimental"]) if not ret_df.empty else float("nan"),
         "hard_stop": _annualized_sharpe(ret_df["hard_stop"]) if not ret_df.empty else float("nan"),
     }
+    k_series = pd.Series(k_abs_values, dtype=float)
+    k_abs_summary = {
+        "n": int(k_series.size),
+        "min": float(k_series.min()) if k_series.size else float("nan"),
+        "median": float(k_series.median()) if k_series.size else float("nan"),
+        "max": float(k_series.max()) if k_series.size else float("nan"),
+    }
     return {
         "returns": ret_df,
         "triggers": trig_df,
+        "suppression": supp_df,
+        "hard_stop_triggers": hs_df,
+        "k_abs_summary": k_abs_summary,
         "sharpe": sharpe,
         "big_moves": big_moves,
     }
@@ -247,6 +306,9 @@ def write_report(result: dict, start: str, end: str) -> Path:
 
     ret_df: pd.DataFrame = result["returns"]
     trig_df: pd.DataFrame = result["triggers"]
+    supp_df: pd.DataFrame = result["suppression"]
+    hs_df: pd.DataFrame = result["hard_stop_triggers"]
+    k_abs = result["k_abs_summary"]
     sharpe = result["sharpe"]
     big = result["big_moves"]
 
@@ -257,7 +319,8 @@ def write_report(result: dict, start: str, end: str) -> Path:
     lines.append("═" * 72)
     lines.append(f"  Markov Exit Layer — DIAGNOSTIC backtest  [{start} → {end}]")
     lines.append(f"  generated {datetime.now().isoformat(timespec='seconds')}")
-    lines.append(f"  rho={RHO}  K={K}  calibration_lookback={CALIB_LOOKBACK}d  "
+    lines.append(f"  rho={RHO}  K_fraction={K_FRACTION}  "
+                 f"calibration_lookback={CALIB_LOOKBACK}d  "
                  f"MIN_SCORE={MIN_SCORE}  TOP_N={TOP_N}")
     lines.append("═" * 72)
 
@@ -312,9 +375,75 @@ def write_report(result: dict, start: str, end: str) -> Path:
     else:
         lines.append("  (none — no exited ticker had a >5% monthly move)")
 
+    # ── Regime suppression (REV 4 fix B) ──────────────────────────────────
+    lines.append("\n── Regime suppression of Andrade STRONG_SELL (REV 4 fix B) ──")
+    lines.append("  A STRONG_SELL suppressed because the live-regime multiplier > "
+                 f"NEUTRAL_MULT ({NEUTRAL_MULT}).")
+    if not supp_df.empty:
+        total_supp = int(supp_df["suppressed"].sum())
+        months_with_supp = int((supp_df["suppressed"] > 0).sum())
+        lines.append(f"  {'month':<12}{'suppressed':>12}")
+        for month, r in supp_df.iterrows():
+            lines.append(f"  {month:<12}{int(r['suppressed']):>12d}")
+        lines.append("  " + "-" * 24)
+        lines.append(f"  {'TOTAL':<12}{total_supp:>12d}")
+        lines.append(f"  months with ≥1 suppression: {months_with_supp} / {len(supp_df)}")
+    else:
+        lines.append("  (no calibrations)")
+
+    # ── Hard-stop trigger count ───────────────────────────────────────────
+    lines.append("\n── Daily hard-stop triggers (REV 3 = 0) ──")
+    if not hs_df.empty:
+        total_hs = int(hs_df["hs_fired"].sum())
+        months_with_hs = int((hs_df["hs_fired"] > 0).sum())
+        lines.append(f"  {'month':<12}{'hs_fired':>10}")
+        for month, r in hs_df.iterrows():
+            lines.append(f"  {month:<12}{int(r['hs_fired']):>10d}")
+        lines.append("  " + "-" * 22)
+        lines.append(f"  {'TOTAL':<12}{total_hs:>10d}")
+        lines.append(f"  months with ≥1 hard-stop: {months_with_hs} / {len(hs_df)}")
+    else:
+        lines.append("  (no calibrations)")
+
+    # ── K_absolute distribution ───────────────────────────────────────────
+    lines.append("\n── K_absolute distribution across all (ticker, month) calibrations ──")
+    lines.append(f"  K_fraction = {K_FRACTION}  (K_absolute = K_fraction × entry_price)")
+    lines.append(f"  n={k_abs['n']}  min={k_abs['min']:.4f}  "
+                 f"median={k_abs['median']:.4f}  max={k_abs['max']:.4f}")
+    lines.append(f"  (median should be ≈ {K_FRACTION} × median entry price in the universe)")
+
+    # ── REV 3 vs REV 4 comparison ─────────────────────────────────────────
+    lines.append("\n── REV 3 vs REV 4 comparison ──")
+    lines.append(f"  {'Path':<14}{'REV 3 Sharpe':>14}{'REV 4 Sharpe':>14}"
+                 f"{'Δ (REV4−REV3)':>16}")
+    for path_label, key in (("baseline", "baseline"),
+                            ("experimental", "experimental"),
+                            ("hard-stop", "hard_stop")):
+        r3 = REV3_SHARPE[key]
+        r4 = sharpe[key]
+        lines.append(f"  {path_label:<14}{r3:>+14.4f}{r4:>+14.4f}{r4 - r3:>+16.4f}")
+
+    # ── Verdict against the REV 4 rules ───────────────────────────────────
+    exp_r4 = sharpe["experimental"]
+    base_drift = abs(sharpe["baseline"] - REV3_SHARPE["baseline"])
+    rule2 = exp_r4 > REV3_SHARPE["experimental"]        # improve on REV 3
+    rule3 = exp_r4 >= REV3_SHARPE["baseline"]           # meet baseline
+    if rule3:
+        verdict = "FULL PASS (rules 2 & 3)"
+    elif rule2:
+        verdict = "MINIMUM PASS (rule 2 only)"
+    else:
+        verdict = "FAIL (below rule 2)"
+
     lines.append("\n" + "═" * 72)
-    lines.append(f"  VERDICT: experimental Sharpe {'≥' if d_exp >= 0 else '<'} baseline "
-                 f"(Δ={d_exp:+.4f})")
+    lines.append(f"  baseline drift vs REV 3: {base_drift:.6f} "
+                 f"({'OK' if base_drift <= 1e-4 else 'DRIFT > 1e-4 — INVESTIGATE'})")
+    lines.append(f"  rule 2 (exp > {REV3_SHARPE['experimental']:+.4f}): "
+                 f"{'PASS' if rule2 else 'FAIL'}")
+    lines.append(f"  rule 3 (exp ≥ {REV3_SHARPE['baseline']:+.4f}): "
+                 f"{'PASS' if rule3 else 'FAIL'}")
+    lines.append(f"  VERDICT: {verdict}   experimental Sharpe {exp_r4:+.4f} "
+                 f"(Δ vs baseline {d_exp:+.4f})")
     lines.append("═" * 72)
 
     report = "\n".join(lines)
