@@ -1,5 +1,6 @@
 # Markov Exit Layer — DIAGNOSTIC BATCH (post-REV 4 second opinion)
-Date: 2026-07-30. Branch: `prototype/markov-exit-layer` (HEAD = 4a2a699 + uncommitted REV 4).
+Date: 2026-07-30 (context refreshed 2026-08-03). Branch: `prototype/markov-exit-layer`,
+HEAD = **efc1831** (REV 4 committed and pushed to origin).
 
 Copy-paste each prompt into a fresh Opus session, one at a time, in order. Each prompt is
 self-contained. Prompt 1 is a HARD GATE — if it fails, STOP and report to Aman; do not run
@@ -67,12 +68,21 @@ census will most likely show why.
   must equal `$PWD`. If not, STOP and ask Aman for the current path. (It has moved three
   times; the path written in `MarkovExit_Prompts.md` line ~95 —
   `/Users/aman/Projects/Ai Trading Agent` — is STALE and no longer exists.)
-- **ACTIVE I/O HAZARD.** As of 2026-07-30, `src/strategies/ensemble/regime_gate.py`
-  returns `OSError [Errno 35] Resource deadlock avoided` on read — the iCloud
-  Desktop-sync eviction problem, recurring at the current Desktop location. If any read
-  fails this way: STOP, tell Aman, and have him either disable iCloud "Desktop &
-  Documents Folders" sync or move the repo off Desktop. Do not retry in a loop and do not
-  work around it by reconstructing the file from memory.
+- **I/O hazard RESOLVED 2026-08-03.** The repo previously lived under `~/Desktop/` inside
+  iCloud's synced Desktop tree and threw `OSError [Errno 35] Resource deadlock avoided` on
+  cold files (it once crashed `git status` with a bus error). It has been MOVED OUT of the
+  synced tree. If any read ever returns Errno 35 again, STOP and tell Aman — do not retry
+  in a loop and do not work around it by reconstructing the file from memory.
+- **Environment rebuilt 2026-08-03 and verified.** `.venv` was recreated and pinned from
+  `requirements.lock.txt` — NOT from `requirements.txt`, whose `>=` pins pull pandas 3.x
+  and sklearn 1.9 and silently break the frozen pickle. Confirmed good: pandas 2.3.3,
+  scikit-learn 1.8.0, numpy 2.4.4, xgboost 3.2.0, scipy 1.17.1, numba 0.65.1,
+  hmmlearn 0.3.3. The exit suite passes 89/89 and `models/ensemble_models.pkl` loads with
+  no InconsistentVersionWarning. If you change the environment at all, re-verify both
+  before trusting any number. Never run `pip install -r requirements.txt` in this repo.
+- **`models/ensemble_models.pkl` is NOT tracked in git.** It exists only on disk — a fresh
+  clone does not contain it. Never delete, overwrite, or `git clean` it. md5 must stay
+  `296e589f4da205eb1d171c2121d90f82`.
 - Branch: `prototype/markov-exit-layer`. Agents NEVER commit or push. Prompt 5 prints
   literal commands for Aman. Plain `-m`, **no Co-Authored-By trailer**.
 - Frozen ensemble `models/ensemble_models.pkl` md5 `296e589f4da205eb1d171c2121d90f82`
@@ -81,7 +91,7 @@ census will most likely show why.
   unresolved — prefer ONE long-running process per prompt over many short ones.
 - Files in play: `scripts/backtest_exit_layer.py` (472 lines), `src/exit/exit_manager.py`,
   `src/exit/zhang_optimal.py`, `src/exit/andrade_dhmm.py`. Sprint 7 harness:
-  `scripts/run_holdout.py`, results in `sprint7_results.json`.
+  `scripts/run_holdout.py`, results in `backtests/results/sprint7_results.json`.
 - Do NOT touch `src/live/scorer.py`, the feature matrix, or the frozen model.
 - Prompts 2-4 may modify `scripts/backtest_exit_layer.py` (instrumentation and variants
   only — the three return paths' existing semantics must not change) and may add new
@@ -103,7 +113,7 @@ report it — do not retry in a loop.
 
 | Source | Window | Sharpe |
 |---|---|---|
-| `sprint7_results.json` (true holdout, frozen ensemble) | 2025-01 → 2026-06 | 1.016 |
+| `backtests/results/sprint7_results.json` (true holdout, frozen ensemble) | 2025-01 → 2026-06 | 1.016 |
 | `backtest_exit_layer.py` `baseline` path | 2025-01-01 → 2026-06-30 | +1.5871 |
 
 Same window, same frozen model, same universe. The gap is larger than the entire
