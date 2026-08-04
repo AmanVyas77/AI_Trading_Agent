@@ -392,3 +392,88 @@ git push origin prototype/markov-exit-layer
 Before printing the commands, verify `md5 models/ensemble_models.pkl` is still
 `296e589f4da205eb1d171c2121d90f82` and that `git status` shows nothing staged under
 `src/exit/` or `models/`. If either check fails, print the failure instead of the commands.
+
+---
+
+# PROMPT 1C — Vintage freeze + Andrade-off sanity check
+(Added 2026-08-04, after Prompt 1 RECONCILED and the as-of regime lookahead was fixed.
+Run this BEFORE Prompt 2.)
+
+Guard first, as always: `basename "$PWD"` == `Ai Trading Agent`, `git rev-parse
+--show-toplevel` == `$PWD`, branch `prototype/markov-exit-layer`, `md5
+models/ensemble_models.pkl` == `296e589f4da205eb1d171c2121d90f82`.
+
+**NEW mandatory guard — assert the interpreter before anything else.** Print
+`sys.executable`, `numpy.__version__`, `sklearn.__version__`, `pandas.__version__` and
+assert they are the repo `.venv` with numpy 2.4.4 / sklearn 1.8.0 / pandas 2.3.3. Prompt 1
+was initially run under `/opt/anaconda3/bin/python3` (numpy 1.26.3 / sklearn 1.2.2) by
+mistake. Never run any rung of this batch under anaconda base. Fail loudly if the versions
+do not match.
+
+## Task A — physically freeze the data vintage
+
+`src/data_vintage.py` fingerprints the data (sha256 over rows read) and detects revision.
+That is a tripwire, not a freeze. The AV news backfill runs nightly through roughly
+2026-08-11, retroactively revising historical inputs, so without a physical snapshot
+Prompts 2, 3 and 4 will each read a different dataset and none of their numbers will be
+comparable to each other or to the −0.3049 just measured.
+
+1. Create `backtests/vintage_2026-08-04/` containing a byte-for-byte copy of every input
+   the diagnostic path reads: `data/quant_research.db`, `data/processed/
+   ensemble_feature_matrix.parquet`, and any scores parquet the harness consumes. Do not
+   copy `models/ensemble_models.pkl` — reference it in place, and assert its md5.
+2. Write `backtests/vintage_2026-08-04/MANIFEST.json`: for each file, absolute source
+   path, size in bytes, sha256, and mtime; plus the `data_vintage.py` digest, row count
+   and ticker count; plus the git HEAD sha; plus the interpreter/version block from the
+   guard.
+3. Add a way for `scripts/backtest_exit_layer.py` to read from the frozen snapshot — an
+   `--vintage <dir>` argument or an env var, your choice, but it must be explicit and it
+   must be logged in every run's output so no future run is ambiguous about what it read.
+4. Re-run the three paths against the frozen snapshot and confirm they reproduce
+   baseline +1.5871 and experimental +1.2822 to ≤1e-6. If they do not, STOP and report —
+   that would mean the snapshot is not capturing everything the harness reads.
+
+## Task B — Andrade-off sanity check (cheap, decisive)
+
+Three points now suggest the layer improves monotonically as Andrade does less:
+
+| Andrade suppressions | experimental Sharpe |
+|---|---|
+| 0                    | 1.0783 |
+| 37 (13/17 months)    | 1.2822 |
+| all (implied)        | 1.5871 = baseline |
+
+The third row is an inference, not a measurement. Measure it.
+
+5. Add a flag that disables the Andrade override entirely, leaving Zhang as the only exit
+   trigger. Run the experimental path with it. **Expected: exactly baseline (+1.5871) to
+   floating-point tolerance**, because Zhang was found to produce 0 independent triggers
+   across 225 calibrations.
+6. If it matches: the trigger decomposition is confirmed, Zhang contributes nothing on
+   this window, and Andrade is the entire active surface. Say so plainly.
+7. **If it does NOT match: STOP and report immediately.** That would mean Zhang fires
+   independently somewhere, the 0-independent-triggers finding is wrong, and the whole
+   attribution in the REV 3/REV 4 analysis needs redoing before any further prompt runs.
+8. Either way, report the Zhang Case I vs Case II split across all 225 calibrations while
+   you are in there, and the distribution of `x*` relative to `p0`.
+
+## Task C — correct the verdict language in the Prompt 1 report
+
+The Prompt 1 report records "MINIMUM PASS (rule 2)". That is the OLD verdict rule from
+`MarkovExit_Prompts.md` (beat REV 3's 1.0783). It is NOT the rule governing this batch.
+
+This batch's pre-committed rule requires ALL THREE of: (a) negative mean `ret_full` given
+SELL, (b) paired monthly difference significant at 0.05 by BOTH sign test and paired
+t-test, (c) redistribute-to-survivors variant beats baseline on Sharpe or cuts max
+drawdown by ≥3pp. None of the three has been tested. Prompt 2 tests (a), Prompt 3 tests
+(c), Prompt 4 tests (b).
+
+9. Amend the report: the correct status is **NO VERDICT YET — lookahead corrected,
+   experimental improved from 1.0783 to 1.2822, still −0.3049 vs baseline.** A losing
+   configuration that loses less is not a pass. Do not use the word "pass" anywhere in
+   the report except when quoting this batch's three-part rule.
+
+## Deliverable
+
+`backtests/exit_layer_vintage_and_andrade_off_2026-08-04.md` covering Tasks A, B and C,
+plus the manifest and the amended Prompt 1 report. Print findings; do not commit.

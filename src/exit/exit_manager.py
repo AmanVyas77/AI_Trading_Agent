@@ -192,6 +192,7 @@ def calibrate_for_month(
     entry_price: float,
     K_fraction: float = DEFAULT_K_FRACTION,
     calibration_lookback: int = 250,
+    regime_signal: dict | None = None,
 ) -> MonthlyCalibration:
     """Fit Zhang params + Andrade signal once for (ticker, month_end).
 
@@ -206,13 +207,21 @@ def calibrate_for_month(
     is what Zhang's :func:`decide` / :func:`case2_thresholds` consume — never a
     quantity derived from the evolving ``current_price``.
 
-    The live macro regime is fetched once here via
-    :func:`~src.strategies.ensemble.regime_gate.get_live_regime_signal` and cached
-    on the bundle (fix B); it gates the Andrade STRONG_SELL override in
-    :func:`monthly_exit_review`. ``get_live_regime_signal`` does not accept a
-    timestamp, so historical backtests use the *current regime as of run time* as
-    an approximation — defensible for a short diagnostic window where the macro
-    regime is effectively constant.
+    The macro regime is cached once here on the bundle (fix B); it gates the
+    Andrade STRONG_SELL override in :func:`monthly_exit_review`.
+
+    ``regime_signal`` — REQUIRED FOR BACKTESTS (2026-08-03 lookahead fix).
+    When ``None`` this falls back to
+    :func:`~src.strategies.ensemble.regime_gate.get_live_regime_signal`, which
+    reads the *latest* macro snapshot and takes no as-of argument. That is
+    correct for live/forward use and **wrong inside a backtest loop**: it applies
+    today's macro state to a decision made months in the past, and makes the
+    result change whenever the macro tables are refreshed. Backtests MUST pass a
+    point-in-time reading from
+    :func:`~src.strategies.ensemble.regime_gate.get_regime_signal_asof`
+    (same dict shape). See ``regime_gate.get_live_regime_signal``'s own
+    docstring: "Only for live/forward use — never called inside the backtest
+    loop."
 
     This is the ONLY function here that performs DHMM / parameter fitting —
     the decision functions consume the returned bundle without re-fitting.
@@ -235,7 +244,9 @@ def calibrate_for_month(
     andrade_signal = next_signal(window, prev_mode="daily", random_state=42)
 
     K_absolute = K_fraction * entry_price
-    regime_signal = get_live_regime_signal()
+    if regime_signal is None:
+        # Live/forward path only. Backtests must pass get_regime_signal_asof().
+        regime_signal = get_live_regime_signal()
 
     return MonthlyCalibration(
         ticker=ticker,

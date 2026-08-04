@@ -48,12 +48,18 @@ Scale note (REV 4 — why the hard-stop can now fire on real names)
 
 Regime gate (REV 4 fix B)
 -------------------------
-  The Andrade STRONG_SELL override is suppressed when the cached live-regime
-  multiplier > NEUTRAL_MULT (a RISK_ON tape). get_live_regime_signal() has no
-  as-of parameter, so every (ticker, month) calibration caches the SAME current
-  regime — the "current regime as of run time" approximation. Suppression is
-  therefore all-or-nothing across the window depending on today's macro; the
-  summary reports the suppression count so the effect is visible.
+  The Andrade STRONG_SELL override is suppressed when the cached regime
+  multiplier > NEUTRAL_MULT (a RISK_ON tape).
+
+  LOOKAHEAD FIX (2026-08-03). REV 4 called get_live_regime_signal() inside
+  calibrate_for_month, i.e. inside this backtest loop — against that function's
+  own docstring ("Only for live/forward use — never called inside the backtest
+  loop"). It has no as-of parameter, so every (ticker, month) calibration cached
+  the SAME run-time regime: today's macro gating 2025 decisions, all-or-nothing
+  across the window, and silently different on every re-run as the macro tables
+  refreshed. It now uses get_regime_signal_asof(month_end), which reads only
+  macro observations dated on or before that month-end. Suppression is now a
+  genuine per-month property; the summary reports the per-month reading.
 
 Usage
 -----
@@ -84,7 +90,11 @@ from src.exit.exit_manager import (  # noqa: E402
 )
 from src.live.scorer import score_months  # noqa: E402
 from src.strategies.ensemble.portfolio_builder import MIN_SCORE, TOP_N  # noqa: E402
-from src.strategies.ensemble.regime_gate import NEUTRAL_MULT  # noqa: E402
+from src.strategies.ensemble.regime_gate import (  # noqa: E402
+    NEUTRAL_MULT,
+    get_regime_signal_asof,
+)
+from src.utils.data_vintage import format_vintage, price_vintage  # noqa: E402
 with open(ROOT / "config" / "settings.yaml") as f:
     _CFG = yaml.safe_load(f)
 DB_PATH = ROOT / _CFG["data"]["paths"]["db"]
@@ -146,6 +156,12 @@ def _annualized_sharpe(monthly: pd.Series) -> float:
 # ── Core backtest ────────────────────────────────────────────────────────────
 
 def run_backtest(start: str, end: str) -> dict:
+    # Pin the price vintage FIRST: the prices table is retroactively rewritten by
+    # the AV backfill, so a result is only comparable against another run on the
+    # same fingerprint. See src/utils/data_vintage.py.
+    vintage = price_vintage(DB_PATH, start, end)
+    logger.info("AUDIT: %s", format_vintage(vintage))
+
     logger.info("Regenerating holdout_scores.parquet for [%s, %s] …", start, end)
     score_months(start=start, end=end)  # overwrites HOLDOUT_SCORES
 
@@ -164,10 +180,25 @@ def run_backtest(start: str, end: str) -> dict:
     suppression_rows: list[dict] = []  # per-month Andrade-suppressed-by-regime count
     k_abs_values: list[float] = []     # every K_absolute used (for distribution)
     hard_stop_rows: list[dict] = []    # per-month hard-stop trigger count
+    regime_asof_rows: list[dict] = []  # per-month point-in-time regime reading
 
     for i, me in enumerate(month_ends[:-1]):
         me = pd.Timestamp(me)
         me_next = pd.Timestamp(month_ends[i + 1])
+
+        # POINT-IN-TIME regime for this month (2026-08-03 lookahead fix).
+        # Previously calibrate_for_month called get_live_regime_signal() per
+        # (ticker, month), which reads the LATEST macro snapshot — today's macro
+        # gating 2025 decisions, and a result that changed whenever the macro
+        # tables were refreshed. Fetched once per month and reused across the
+        # book: it does not vary by ticker.
+        regime_asof = get_regime_signal_asof(me)
+        regime_asof_rows.append({
+            "month": me.date().isoformat(),
+            "multiplier": regime_asof["multiplier"],
+            "rule_signal": regime_asof["rule_signal"],
+            "stale": regime_asof["stale"],
+        })
 
         month_scores = scores[scores["date"] == me]
         above = month_scores[month_scores["ensemble_score"] > MIN_SCORE]
@@ -203,6 +234,7 @@ def run_backtest(start: str, end: str) -> dict:
                     entry_price=entry_price,
                     K_fraction=K_FRACTION,
                     calibration_lookback=CALIB_LOOKBACK,
+                    regime_signal=regime_asof,
                 )
             except ValueError as exc:
                 logger.warning("%s %s: calibration skipped (%s)", me.date(), t, exc)
@@ -294,6 +326,8 @@ def run_backtest(start: str, end: str) -> dict:
         "k_abs_summary": k_abs_summary,
         "sharpe": sharpe,
         "big_moves": big_moves,
+        "price_vintage": vintage,
+        "regime_asof": regime_asof_rows,
     }
 
 
@@ -322,6 +356,9 @@ def write_report(result: dict, start: str, end: str) -> Path:
     lines.append(f"  rho={RHO}  K_fraction={K_FRACTION}  "
                  f"calibration_lookback={CALIB_LOOKBACK}d  "
                  f"MIN_SCORE={MIN_SCORE}  TOP_N={TOP_N}")
+    v = result["price_vintage"]
+    lines.append(f"  {format_vintage(v)}")
+    lines.append(f"  price_vintage sha256 (full): {v['sha256']}")
     lines.append("═" * 72)
 
     lines.append("\n── Annualized Sharpe (×√12) ──")
@@ -404,6 +441,22 @@ def write_report(result: dict, start: str, end: str) -> Path:
         lines.append(f"  months with ≥1 hard-stop: {months_with_hs} / {len(hs_df)}")
     else:
         lines.append("  (no calibrations)")
+
+    # ── Point-in-time regime per month (2026-08-03 lookahead fix) ─────────
+    lines.append("\n── Point-in-time regime per month (as-of, NOT run-time) ──")
+    lines.append("  Was: get_live_regime_signal() — latest snapshot applied to every month.")
+    lines.append("  Now: get_regime_signal_asof(month_end) — macro dated ≤ month_end only.")
+    ra = result["regime_asof"]
+    if ra:
+        lines.append(f"  {'month':<12}{'mult':>7}{'rule':>10}{'stale':>8}")
+        for r in ra:
+            lines.append(f"  {r['month']:<12}{r['multiplier']:>7.2f}"
+                         f"{r['rule_signal']:>10}{str(r['stale']):>8}")
+        n_supp_possible = sum(1 for r in ra if r["multiplier"] > NEUTRAL_MULT)
+        lines.append(f"  months where regime could suppress Andrade "
+                     f"(mult > {NEUTRAL_MULT}): {n_supp_possible} / {len(ra)}")
+    else:
+        lines.append("  (none)")
 
     # ── K_absolute distribution ───────────────────────────────────────────
     lines.append("\n── K_absolute distribution across all (ticker, month) calibrations ──")
