@@ -151,5 +151,102 @@
       "disclosure_requirement": "MANDATORY: any future performance claim on this book must cite this gap. The book is NOT a continuous track record — it was held unmanaged and unrebalanced from 2026-07-13 to 2026-09-01, across two missed monthly rebalances — and must never be presented as one. Any return series spanning 2026-07 or 2026-08 must carry this gap disclosure alongside it, and must state whether it is reconstructed from EOD marks or read from the broker, because the two differ materially over this window.",
       "reproducibility_note": "Re-scoring 2026-06-30 with the frozen model on the 2026-09-01 feature matrix yields 3 names above MIN_SCORE, whereas the 2026-07-12 run selected 6. The feature matrix recomputes cross-sectional z-scores over the full panel, so prior months are not bit-reproducible after a refresh. The 2026-06 book as traded is preserved in logs/live_runs/, not regenerable from current data."
     }
-  ]
+  ],
+  "breadth_rules": {
+    "decided_on": "2026-09-02",
+    "decided_by": "operator (Aman)",
+    "decided_blind": "Fixed in advance of knowing which ticker it would ever apply to. At the time of decision no n<=1 month had occurred on the live book; the live book stood at n=2 (AMAT, HPE) for 2026-08 and this rule is an exact no-op on that book. The point of pre-committing was to remove discretion from a future month whose affected name is unknowable today.",
+    "rule_name": "bound the unobserved tail; cap tighter than observed behaviour",
+    "cap_per_name_post_multiplier": 0.6,
+    "cap_rationale": "0.60 is the n=2 x RISK_ON weight (1.2/2). The cap is TIGHTER THAN OBSERVED BEHAVIOUR - the maximum per-name weight ever observed is 1.00, from two profitable n=1 x NEUTRAL months (2024-01 FTNT, 2024-03 DELL). The rule therefore accepts a measured -0.036 Sharpe / -5.6pp test-fold cost, incurred precisely by clipping those two profitable months, in exchange for bounding the UNOBSERVED n=1 x RISK_ON case at 120%. This is a real constraint with a real cost, not a formalization of existing behaviour.",
+    "behaviour": {
+      "n_eq_0": "All cash. scaled_weight = 0.0. UNCHANGED from existing behaviour.",
+      "n_eq_1": "per_name_weight = min(multiplier/1, 0.60); remainder to cash. Binds at NEUTRAL (1.0 -> 0.60) and RISK_ON (1.2 -> 0.60). Does NOT bind at RISK_OFF (0.5 -> 0.5), which is intended: 50% is already below the 0.60 cap.",
+      "n_ge_2": "per_name_weight = min(multiplier/n, 0.60). UNCHANGED in every observed case: the cap is inactive for all n>=2 at every multiplier, and at n=2 x RISK_ON it returns exactly 0.60, bit-identical to the uncapped value."
+    },
+    "implementation_spec": {
+      "form": "min(weight, 0.60) applied to the post-multiplier per-name weight.",
+      "sites": [
+        "src/live/rebalance.py (scaled_weight, live path)",
+        "src/strategies/ensemble/portfolio_builder.py (1.0/n_selected, backtest path)"
+      ],
+      "required_test": "Assert the n=2 x RISK_ON per-name weight is BIT-IDENTICAL before and after, comparing against the UNCAPPED COMPUTATION - min(RISK_ON_MULT/2, CAP) == RISK_ON_MULT/2 - not against the literal 0.60. On CPython 1.2/2 and 0.60 happen to round to the same double (0x1.3333333333333p-1), so a literal assertion would pass today, but it would be passing by coincidence and would break silently if RISK_ON_MULT or the cap were ever retuned. The uncapped-computation form tests the invariant that actually matters: that the cap does not perturb the n=2 book.",
+      "implemented": false,
+      "deadline": "MUST land before the October rebalance (2026-10-01). rebalance.py:146 (scaled_weight = regime_multiplier / n_selected) and the equivalent line in portfolio_builder.py (1.0 / n_selected) are both still UNBOUNDED. Breadth was 2 in 2026-08, so n=1 is plausibly the next month, not a distant tail.",
+      "handoff": "BreadthCap_Prompt.md (repo root)"
+    },
+    "evidence": {
+      "vintage": "backtests/vintage_2026-08-04 (MANIFEST git_head b5af09b, pickle md5 296e589f4da205eb1d171c2121d90f82)",
+      "method": "Expanding-window out-of-sample: each month scored by its own fold (78 folds, 2018-06 -> 2024-11, 4-month purge); holdout scored by folds[-1] as src/live/scorer.py does. Holdout reconstruction reproduces the vintage's holdout_scores.parquet bit-identically (max|diff| = 0.0, n=954).",
+      "coverage_limitation": "Folds begin 2018-06-30, so no OOS scores exist for 2015-03 -> 2018-05; roughly 40% of the nominal Sprint 5 training window is unmeasurable by this method.",
+      "breadth_by_window": {
+        "train_oos_2018-06_2022-12": {
+          "months": 55,
+          "min": 7,
+          "median": 20,
+          "mean": 18.89,
+          "n0": 0,
+          "n1": 0,
+          "n2": 0
+        },
+        "test_fold_2023-24": {
+          "months": 23,
+          "min": 0,
+          "median": 2,
+          "mean": 6.26,
+          "n0": 8,
+          "n1": 2,
+          "n2": 2
+        },
+        "holdout_2025-01_2026-06": {
+          "months": 18,
+          "min": 3,
+          "median": 14,
+          "mean": 13.0,
+          "n0": 0,
+          "n1": 0,
+          "n2": 0
+        }
+      },
+      "n1_occurrences": [
+        {
+          "month": "2024-01-31",
+          "ticker": "FTNT",
+          "score": 0.520332,
+          "regime": "NEUTRAL",
+          "multiplier": 1.0,
+          "per_name_weight_uncapped": 1.0,
+          "forward_month_return_pct": 7.16
+        },
+        {
+          "month": "2024-03-31",
+          "ticker": "DELL",
+          "score": 0.521629,
+          "regime": "NEUTRAL",
+          "multiplier": 1.0,
+          "per_name_weight_uncapped": 1.0,
+          "forward_month_return_pct": 9.65
+        }
+      ],
+      "n1_impact_on_test_fold": "Both n=1 months were profitable. Holding them: Sharpe 0.822, maxDD -24.87%, total +35.76%. Sending them to cash: Sharpe 0.631, maxDD -24.87%, total +21.13% (-0.191 Sharpe, -14.63pp, zero drawdown relief). n=1 is therefore ALREADY inside the 2023-24 test-fold result the project relies on.",
+      "cap_binding_frequency": "2 of 88 months (2.3%) - only the two n=1 months. Exact no-op on the holdout and on every n>=2 month.",
+      "max_per_name_weight_ever_observed": 1.0,
+      "note_120pct_never_observed": "n=1 has never co-occurred with RISK_ON in 88 months. Both n=1 months were NEUTRAL, so the observed exposure was 100%, not the 120% worst case.",
+      "correction_to_sprint7": "sprint7_results.json records breadth_min_2025_26 = 2, but on the frozen vintage the holdout minimum is 3 (mean 15.22 vs 14.89; median 14 and max 53 match). The n=2 months in this reconstruction are 2023-12-31 and 2024-06-30, both in the TEST FOLD, not the holdout. The claim that a two-name month sits inside the Sharpe-1.016 holdout does not reproduce on this vintage - most likely AV backfill revisions between the Sprint 7 run and the 2026-08-04 freeze.",
+      "reconstruction_caveat": "Reconstructed test Sharpe 0.822 vs Sprint 7 published 0.990, and holdout 1.356 vs 1.016; this is a simplified rebuild, not the full backtest pipeline. Figures are internally consistent RELATIVE comparisons, not restatements.",
+      "post_hoc_disclosure": "Options B and C were specified AFTER observing that both historical n=1 months were profitable. The chosen cap is therefore not blind to that fact, though it is blind to any future affected ticker."
+    },
+    "rejected_options": {
+      "A_follow_existing": "Rejected: leaves the unobserved n=1 x RISK_ON corner live at 120%, on a validation sample of two.",
+      "C_n1_to_cash": "Rejected: largest measured cost (-0.191 Sharpe, -14.63pp on the test fold) for zero drawdown relief, and reads as market-timing.",
+      "D_rank_based": "NOT adopted. Scored best on both windows (+0.103 test, +0.028 holdout Sharpe) but deepens holdout maxDD by 6.7pp, is a strategy change, and would spend a 2023-24 multiple-testing trial. Deferred to the trigger below."
+    },
+    "process_trigger_option_D": {
+      "trigger": "The first time n <= 1 occurs on the LIVE book.",
+      "action": "Schedule the rank-based-selection work (option D) as a proper sprint with its own pre-committed rule.",
+      "explicitly_not": "This is a process trigger, NOT a weighting rule. D is not adopted now and nothing about it enters the live path. The clause exists so the structural fix gets SCHEDULED rather than adopted opportunistically because it scored well on windows that have already been measured."
+    },
+    "implemented": false,
+    "correction_2026-09-02": "An earlier draft of this entry claimed 0.60 was 'the maximum per-name weight ever reached in a validated backtest'. That was FALSE and contradicted this entry's own max_per_name_weight_ever_observed = 1.00. The claim, and three further sentences resting on it (the rule name, the RISK_OFF 'tested ceiling' note, and the float-literal form of the required test), were struck before this entry landed. The cap is tighter than observed behaviour and carries a measured cost; it is not a formalization of what the strategy already did."
+  }
 }
