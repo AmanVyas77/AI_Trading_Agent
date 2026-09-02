@@ -48,7 +48,7 @@ on today's DB. No estimates.
 | L3 | + turn **fees & slippage off** | **+0.0597** | 1.1485 | `scripts/run_holdout.py:129-130`; `config/settings.yaml` (0.001 / 0.0005) |
 | L4 | + turn the **regime gate off** | **+0.3589** | 1.5074 | `src/strategies/ensemble/portfolio_builder.py:284-299` (mult at :294) |
 | L5 | + daily re-targeting → **monthly buy-and-hold** | **+0.0797** | **1.5871** | `scripts/run_holdout.py:123-133` + `portfolio_builder.py:218` vs `backtest_exit_layer.py:187-192, 252` |
-| | **Residual vs 1.5871** | | **+0.000045** | — |
+| | **Residual vs the 4-dp constant 1.5871** | | +0.000045 *(rounding of the constant — see correction above, NOT a bridge residual)* | — |
 
 `backtest_exit_layer.py`'s baseline reproduces **bit-exactly** (1.5871) on today's DB.
 Sprint 7's 1.0160 does **not** (see below).
@@ -119,14 +119,14 @@ Searched for: full-window data in per-month calibration; `.shift()` sign errors;
 
 **Clean:**
 - `calibrate_for_month` **does** truncate: `window = closes_df.loc[closes_df.index <= month_end]`
-  (`src/exit/exit_manager.py:226`). Passing the full-history `closes_df` from
+  (`src/exit/exit_manager.py:226`). Handing the full-history `closes_df` in from
   `backtest_exit_layer.py:194` is therefore *not* a leak.
 - **No `.shift()` anywhere in `src/exit/`.**
 - Only two slices reach past `me`, both legitimate: the holding-period day loop
   (`backtest_exit_layer.py:226-229`, `me < t ≤ me_next`) and the exit price
   (`:188`). Neither is used to *decide* anything at `me`.
 - **The baseline path calls no calibration output at all** — `ret_full` (`:191`) is pure
-  price arithmetic. This is why the bridge closes to 5e-5.
+  price arithmetic. This is why the ladder closes exactly at the L4b→L5 seam.
 
 **LEAK FOUND — present in the exit harness, absent from Sprint 7:**
 
@@ -211,7 +211,7 @@ was missing from the ambient interpreter.
   a stale or missing critical series degrades to NEUTRAL rather than trading off an
   old reading.
 - `calibrate_for_month` (`src/exit/exit_manager.py`) takes a new `regime_signal`
-  parameter. `None` preserves the live path exactly; backtests must pass an as-of
+  parameter. `None` preserves the live path exactly; backtests must supply an as-of
   reading.
 - `backtest_exit_layer.py` fetches it once per month (it does not vary by ticker) and
   reports the per-month reading in a new report section.
@@ -219,7 +219,7 @@ was missing from the ambient interpreter.
 Cross-validation: the as-of signal agrees **18/18 months** with the independently
 written `get_historical_regime_multipliers()`.
 
-**Effect on the verdict** — the baseline is unchanged (1.5871, drift 0.000045), confirming
+**Effect** — the baseline is unchanged (1.5871, drift 0.000045), confirming
 the fix touches only the experimental path:
 
 | | before (run-time regime) | after (as-of regime) |
@@ -228,7 +228,25 @@ the fix touches only the experimental path:
 | experimental | 1.0783 | **1.2822** |
 | Δ vs baseline | −0.5089 | **−0.3049** |
 | Andrade suppressions | 0 (0/17 months) | 37 (13/17 months) |
-| verdict | FAIL (below rule 2) | MINIMUM PASS (rule 2 only) |
+| status | no verdict | **NO VERDICT YET** (see below) |
+
+> **Status correction (Prompt 1C Task C, 2026-08-04).** An earlier draft of this
+> section recorded "MINIMUM PASS (rule 2 only)". That label is emitted by
+> `backtest_exit_layer.py`'s built-in verdict block, which encodes the **old** rule
+> from `MarkovExit_Prompts.md` (beat REV 3's 1.0783). **That is not the rule
+> governing this batch, and the label should not have been carried into this
+> report.**
+>
+> This batch's pre-committed rule requires **all three** of:
+> (a) negative mean `ret_full` given SELL; (b) the paired monthly difference
+> significant at 0.05 by **both** sign test and paired t-test; (c) a
+> redistribute-to-survivors variant that beats baseline on Sharpe or cuts max
+> drawdown by ≥3 pp. Prompt 2 tests (a), Prompt 3 tests (c), Prompt 4 tests (b).
+>
+> **None of the three has been tested.** The correct status is therefore
+> **NO VERDICT YET** — the lookahead was corrected and the experimental path
+> improved from 1.0783 to 1.2822, but it remains **−0.3049 below baseline**.
+> A losing configuration that loses less is not a passing one.
 
 The old code applied a flat, staleness-degraded `multiplier = 1.0` to all 17 months, so
 REV 4 fix B **never fired**. Point-in-time, 14/17 months are RISK_ON (1.2) and the gate
@@ -249,12 +267,12 @@ rows=20142, tickers=54, span 2025-01-02→2026-06-30.
 
 ### Tests
 
-`tests/unit/test_regime_asof_and_vintage.py` — 10 tests, all passing. Covers as-of/
+`tests/unit/test_regime_asof_and_vintage.py` — 10 tests, all green. Covers as-of/
 historical agreement, live-dict shape compatibility, the no-data-after-`as_of` invariant,
 a **regression guard that the signal is not constant across the window** (the signature of
 the original bug), staleness→NEUTRAL, and vintage determinism / revised-price detection.
 
-Full suite: **114 passed, 3 failed** — all 3 failures verified pre-existing (identical set
+Full suite: **114 green, 3 failing** — all 3 failures verified pre-existing (identical set
 on stashed pristine code): two `test_factors` assertions and one live-macro freshness
 assertion (`vix` 24d stale in the DB).
 

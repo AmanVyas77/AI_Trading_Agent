@@ -23,7 +23,8 @@ Notes saved here are automatically re-indexed into ChromaDB on the next ingestio
 - [[papers/kim_2023a_transcripts_risks]] — RAG over earnings calls for corporate risk signals
 - [[papers/kim_2023b_bloated_disclosures]] — ChatGPT reduces information overload in filings
 - [[papers/cao_2024_man_plus_machine]] — Man + machine outperforms either alone
-- [[papers/lopez_lira_2023_chatgpt_returns]] — GPT explains short-term returns from headlines
+- [[papers/lopez_lira_tang_2026_jfe]] — GPT-4 headline scores predict 1-2 day drift (Sharpe 2.97 pre-cost); model-size ladder puts FinBERT at the bottom; alpha decays with adoption
+- [[papers/lopez_lira_2023_chatgpt_returns]] — *superseded by the JFE 2026 version above; kept for provenance*
 - [[papers/bybee_2023_ghost_machine]] — GPT macro predictions align with expert surveys
 - [[papers/wu_2023_bloomberggpt]] — Domain pre-training alone insufficient; scale matters
 - [[papers/bubeck_2023_sparks_agi]] — GPT-4 numerical reasoning failure modes documented
@@ -31,6 +32,7 @@ Notes saved here are automatically re-indexed into ChromaDB on the next ingestio
 
 ### RAG & Prompt Engineering
 - [[papers/lewis_2020_rag]] — Foundational RAG architecture (NeurIPS 2020)
+- [[papers/choi_2025_finder]] — Financial RAG benchmark over 10-Ks; retrieval is the binding constraint (best context recall ~26%), LLM reranking + query rewriting are the cheap wins
 - [[papers/wei_2022_chain_of_thought]] — Chain-of-thought prompting (+8pp accuracy in finance)
 - [[papers/zhang_2023_auto_cot]] — Automatic CoT generalises to structured reasoning
 

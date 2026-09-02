@@ -410,3 +410,437 @@ the trim mechanism stays in `model_trainer.py`, dormant.
   restored to Sprint 5 (expanding) from `ensemble_models_sprint5.pkl`;
   scores/weights regenerated; backtest spot-check reproduced test Sharpe
   0.9898 exactly.
+
+---
+
+## RAG layer — FinDER benchmark DECLINED, three items kept
+
+**Status:** decided 2026-08-08 (Aman). Logged as a full entry rather than
+deleted so a future session does not re-derive the same recommendation from
+the same paper. Supersedes the "FinDER-driven RAG evaluation program"
+proposal written earlier the same day.
+
+### The decision
+
+**Do not run FinDER as a benchmark.** The dataset
+(`huggingface.co/datasets/Linq-AI-Research/FinDER`, 5,703 expert-annotated
+query-evidence-answer triplets over 490 S&P 500 companies' 10-Ks) is public
+and directly on-topic, but running it is not decision-relevant to this
+project.
+
+**The deciding argument.** Ask what a FinDER result would change. If it says
+LLM reranking gives +8pp, we implement reranking. If it says +0, we would not
+believe it — we would assume it failed to transfer to our corpus and our
+section-aware `SECFilingChunker` (FinDER's baselines strip HTML to flat
+paragraphs). An experiment whose outcome does not change the action is not
+worth the cost.
+
+**Supporting reasons:**
+
+- The useful content is the paper's *findings*, not the dataset. Those are
+  extracted and recorded below and in [[papers/choi_2025_finder]] — available
+  for free, already paid for by reading it.
+- FinDER ships its own document corpus and its gold evidence is specific to
+  those 10-Ks. Running it means ingesting a foreign multi-GB corpus through
+  our pipeline on an 8 GB Mac, then standing up a RAGAS LLM-as-judge harness,
+  to obtain a score on someone else's documents.
+- The two things it would validate — that reranking helps, that expanding
+  terse queries helps — are close to settled findings. Benchmarking to confirm
+  them is ceremony.
+
+**The one thing that would reopen this:** FinDER is the only way to get an
+*absolute* calibration ("is our stack embarrassing or merely mediocre"),
+because an in-house recall@k has no external reference point. Judged not worth
+a sprint. If the analyst funnel later underperforms and retrieval is the prime
+suspect, this is the diagnostic to reach for.
+
+### Kept item 1 — LLM reranking (implement, no benchmark needed)
+
+Retrieve wide (top-20), have Claude rerank down to 6, instead of taking raw
+cosine rank. Small diff in `src/rag/query/context_builder.py`
+(`MAX_CHUNKS = 6` currently consumes the retriever's top-n directly).
+Paper's supporting result: Claude-3.7-Sonnet best reranker at F1 63.05, and
+*"retrieval sets need not be perfectly precise — a diverse pool is beneficial,
+since reasoning-focused models discern relevant information despite noise."*
+
+### Kept item 2 — query expansion (implement, no benchmark needed)
+
+Expand the query before it hits Chroma: resolve ticker to company name, expand
+acronyms, add metric synonyms. The funnel emits terse template queries
+(ticker + metric), which is precisely the failure mode measured — expert
+rewriting lifted precision 25.7 → 33.9 in the paper.
+
+### Kept item 3 — in-house retrieval eval, AFTER the funnel exists
+
+The real gap is that the RAG layer has never been measured on *our* data.
+FinDER does not fix that either. But the in-house version is small, because
+the funnel's queries come from a dossier template — roughly 10-20 question
+types, known in advance. We do not need a 5,703-query distribution. We need:
+for those specific questions, does retrieval surface the right chunks?
+Metric = recall@k against hand-checked chunk IDs. An afternoon of annotation,
+not a sprint.
+
+**Sequencing:** build the funnel first, with reranking and query expansion on
+by default; measure once real dossiers exist. Measuring a component before the
+system that consumes it optimises for the wrong thing.
+
+**Burn-once discipline still applies.** If the in-house set is used to tune
+retrieval configs, it cannot also serve as the funnel's acceptance gate —
+same hazard as the 2025-26 holdout. Split dev / held-out at creation time.
+
+### DROPPED — embedding model swap
+
+`all-MiniLM-L6-v2` (384-dim, general-purpose) is weaker than everything in the
+paper's comparison set; `gte-large-en-v1.5` (434M) scores 17.83 context recall
+vs BM25's 11.68, and E5-Mistral tops the table at 25.95 but is 7B (~14 GB
+fp16, not viable on the 8 GB Mac). **Not doing this speculatively** — it costs
+a full corpus re-embed for a gain nothing currently measures. Revisit only if
+item 3 shows retrieval is the funnel's binding constraint.
+
+### Findings retained regardless (these are the paper's actual value)
+
+- **Retrieval is the binding constraint, not the generator.** Best-in-class
+  context recall on 10-Ks is **25.95%**. Claude's answer correctness runs
+  **9.4 (no context) → 33.9 (top-10 retrieved) → 66.5 (perfect context)**.
+  Roughly half the achievable quality is lost before the LLM sees anything —
+  prompt engineering and model choice are second-order until retrieval
+  improves.
+- **RULING: RAG never supplies numbers to the analyst.** Numbers come from
+  `xbrl_facts` and the factor parquets — exact, point-in-time. RAG supplies
+  narrative context only. `context_builder.py` already injects structured
+  scores; this is a reason not to expand RAG's role, not to widen it. Useful
+  corollary: because RAG is narrative-only, bad retrieval yields a *vague*
+  verdict rather than a *wrong number* — the blast radius is lower than it
+  first appears, which is part of why the benchmark was declined.
+- **Faithfulness ≫ correctness** (~85 vs ~29 on partial context). Models are
+  consistent with whatever context they are handed; the context is what is
+  wrong. Therefore the analyst verdict log must record **retrieved chunk
+  IDs**, not just the verdict — otherwise a bad verdict is un-diagnosable
+  after the fact.
+- **News is a different retrieval problem** and FinDER says nothing about it
+  (10-K only). Our 254k news rows are already chunk-sized, recency-dominated,
+  and need cross-source dedup. Open design question, decide before building:
+  news probably should not enter the dossier via semantic retrieval at all,
+  but as a date-filtered SQL pull ("last 30 days of headlines for this
+  ticker"). Semantic search over news mainly buys "what has been said about
+  X", which may not be what the analyst needs.
+
+### Two gates — do not conflate
+
+- **Gate 1 (RAG quality)** — retrieval good enough to be worth wiring in?
+  A prerequisite filter only.
+- **Gate 2 (analyst value)** — shadow-stage forward paper trading with a
+  pre-committed rule, per the END-GOAL entry above. The only thing that
+  constitutes evidence of value.
+
+Passing Gate 1 buys the right to run Gate 2, nothing more.
+
+**Suggested insertion:** items 1 and 2 fold into the first `src/analyst/`
+session as defaults. Item 3 is a follow-up once dossiers exist. No standalone
+sprint.
+
+---
+
+## Sprint 9 flag — FinBERT is the weakest scorer on the published ladder
+
+**Status:** open, logged 2026-08-08. Affects Sprint 9 in flight — not a
+blocker, a second arm worth running.
+
+Lopez-Lira & Tang (JFE 2026, the published version of the
+`lopez_lira_2023_chatgpt_returns` draft already in the corpus) rank LLMs by
+drift-strategy Sharpe: **GPT-4 2.97 > GPT-3.5 1.66 > DistilBART-MNLI 1.26 >
+basic models negative**. FinBERT-class domain models sit at the bottom of
+that ladder. In their regressions the GPT-4 score **subsumes** RavenPack
+commercial sentiment for drift — RavenPack's coefficient goes insignificant
+once GPT-4 is included.
+
+Sprint 9 scores all 254k ingested articles with FinBERT, i.e. the weakest
+arm they tested. **This is not a reason to kill Sprint 9** — monthly
+aggregation into a cross-sectional feature is a genuinely different task
+from daily drift trading, and FinBERT may well be adequate for it. But it
+is a strong reason not to assume FinBERT is the ceiling.
+
+**Proposed second arm:** score the same corpus with Claude and carry
+`news_sentiment_llm` alongside FinBERT's `news_sentiment`. The articles are
+already ingested (163,921 FNSPID 2015-2023 + 90,491 AV 2022-01→2026-08);
+only the scoring pass differs. Cost control: the LLM arm only needs the
+post-2022 AV window, or a subsample — the monthly aggregate is a mean over
+many articles and is robust to sampling.
+
+**Multiple-testing note:** a second feature arm is a second trial against
+the same 2023-24 test window (which has now judged 5+ experiments). Each arm
+needs its own pre-committed rule, and they must be declared **before**
+either is evaluated — not "run both, keep the winner."
+
+### Do NOT implement their trading strategy
+
+Recorded so it is not revisited. Their signal is daily-rebalanced
+long-short, ~190% daily turnover, 1-2 trading day drift horizon,
+concentrated in **small caps** and the **short leg** (short Sharpe 2.01 vs
+long 0.78). Unprofitable at 20 bps round-trip. Our system is monthly,
+long-only, 54 large-cap tech names. Every dimension that makes their signal
+work is one we have excluded by design.
+
+**Two findings worth keeping anyway:**
+
+- **Alpha decay is documented.** Their Sharpe falls 6.54 (2021Q4) → 3.68
+  (2022) → 2.33 (2023) → 1.22 (Jan-May 2024) as LLM adoption rose. Any
+  news-sentiment feature should be expected to decay; argues for periodic
+  re-validation rather than a one-time PASS.
+- **Topic-conditional underreaction.** Markets process earnings,
+  partnerships and clinical trials efficiently (strong initial alignment,
+  no significant drift), but underreact to insider transactions, dividend
+  announcements and healthcare conference presentations (significant
+  Drift×GPT of 26.3 / 22.3 / 34.2 bps). This is a gate on *when* an analyst
+  verdict should carry weight — relevant to the funnel, not to Sprint 9.
+
+---
+
+## Analyst funnel — prompt design (buy side near-final, hold/sell OPEN)
+
+**Status:** open, logged 2026-08-08 (Aman). Buy-side prompt believed close to
+final design; selection still to be tested. Hold/sell prompt is an unanswered
+design question. Belongs to the END-GOAL entry above (staged item 2).
+
+### Provenance
+
+The candidate prompt is Kim, Muhn & Nikolaev (2024) — already in the corpus as
+[[papers/kim_2024_financial_statement_llm]], the 60.35% (GPT-4 + CoT) vs 52.71%
+(human analysts, 1-month horizon) result on next-period earnings direction.
+Their setup: **anonymised** standardised statements, no company name, no dates,
+CoT scaffold of trend → ratio → synthesis → prediction. Anonymisation is load-
+bearing in their design — it is what kills the memorisation channel.
+
+### BUG TO FIX BEFORE BUILDING — ContextBuilder leaks the quant verdict
+
+`src/rag/query/context_builder.py::_scores_context()` injects
+**`ensemble_score`** — the XGBoost model's own output — into the prompt, plus
+every fundamental factor score, whenever a ticker is detected. Verified by
+reading the function, not inferred.
+
+If the funnel reuses `ContextBuilder` to build dossiers, the analyst sees the
+quant verdict before forming its own. That is precisely the channel the
+END-GOAL entry rules out ("blind the analyst to the quant flag direction —
+sycophancy: Sharma 2024; anchoring: Tversky & Kahneman 1974"). It is not a
+hypothetical risk; it is the *default behaviour* of the function one would
+naturally reuse.
+
+**Fix:** `src/analyst/` gets its own dossier builder, or `ContextBuilder` grows
+a `blind=True` path that suppresses the ensemble block. Do not rely on
+remembering to pass `ticker=None`.
+
+### RULING — the LLM does not compute numbers
+
+Extension of the RAG ruling recorded in the FinDER entry above. Numbers come
+from `xbrl_facts` and the factor parquets. RAG supplies narrative. **The LLM
+supplies interpretation only.**
+
+The draft prompt asked for eight ratios "showing calculations explicitly."
+Dropped. Rationale:
+
+- We already compute all of it. `piotroski_f` alone subsumes ROA, leverage,
+  current ratio and asset turnover as components; plus `gross_profitability`,
+  `qmj_safety`, `qmj_payout`, `fcf_yield`, `revenue_acceleration`,
+  `deferred_revenue_yoy`, `rd_intensity`, `sue_score`.
+- [[papers/bubeck_2023_sparks_agi]] is in the corpus specifically documenting
+  GPT-4 numerical-reasoning failure modes. Hand-computed ratios are the single
+  most likely source of a wrong verdict.
+- The explicit-calculation block is the longest and most expensive output
+  section, and it produces nothing we do not already hold exactly.
+
+Corollary: do not paste raw two-year statements either. Emit a compact
+structured table from `xbrl_facts` with derived ratios pre-attached
+(~3-5× input token reduction).
+
+### Cache the static half
+
+Persona + tag schema + analytical instructions are identical across all 54
+tickers every month; only the dossier varies. Prompt-cache the prefix. At
+54 names × monthly × two arms (below), this is a material cost line, not a
+micro-optimisation.
+
+### Output design — emit BOTH a decision and a calibration claim
+
+Three-way target mismatch, resolved deliberately:
+
+| | Target |
+|---|---|
+| Kim et al. | next-period **earnings direction** |
+| Our XGBoost label | **outperformance vs XLK** |
+| Funnel's stated job | **CONFIRM / REJECT** a momentum flag |
+
+Keep earnings direction *alongside* the verdict — not because it is the
+decision, but because it is **falsifiable on a known date**, which the END-GOAL
+entry explicitly asks for. CONFIRM/REJECT is the actionable output but is mushy
+to grade; earnings direction is a hard dated claim gradeable without waiting on
+price action or arguing attribution.
+
+`<confidence>` (HIGH/MEDIUM/LOW self-report) is poorly calibrated in LLMs. Log
+it, but do **not** let it gate the veto cap until it is shown to predict
+anything. Better candidates: agreement across N samples at temperature > 0, or
+agreement between the two arms below.
+
+### Candidate prompt (buy side)
+
+```
+[CACHED PREFIX — static across all tickers]
+
+You are a senior financial analyst. You will receive a structured
+financial summary. All figures are pre-computed and exact — do NOT
+recompute them, and do not perform arithmetic. Interpret what they mean.
+
+If a figure needed for a judgment is absent, say so explicitly rather
+than estimating it.
+
+Respond using exactly the XML tags below, in order.
+
+<trend_analysis>
+The 3-5 most important trends across revenue, cost structure,
+profitability, and balance sheet composition. For each: direction,
+magnitude, and implication. Cite the specific line item or ratio.
+</trend_analysis>
+
+<ratio_interpretation>
+Interpret the provided ratios and their year-over-year changes. Focus
+on what drove each change and whether it is likely to persist. Flag
+any ratio that contradicts the others.
+</ratio_interpretation>
+
+<risk_factors>
+2-3 concerns evident from the data. Cite the relevant line items.
+</risk_factors>
+
+<reasoning>
+Synthesize the above into a judgment about the company's earnings
+trajectory and the durability of its recent price momentum. State
+which single factor most influenced your conclusion, and what would
+have to be true for you to be wrong.
+</reasoning>
+
+<earnings_direction>INCREASE or DECREASE</earnings_direction>
+
+<falsifiable_checkpoint>
+One specific, dated, checkable claim implied by your reasoning
+(e.g. "FY2026 Q3 revenue YoY growth below 12%").
+</falsifiable_checkpoint>
+
+<verdict>CONFIRMED or REJECTED</verdict>
+
+<confidence>HIGH, MEDIUM, or LOW — one sentence of justification.</confidence>
+
+[VARIABLE BLOCK — per ticker]
+
+<financial_summary>
+  [compact xbrl_facts table, 2 fiscal years]
+  [pre-computed ratios: gross_profitability, piotroski_f components,
+   qmj_safety, fcf_yield, revenue_acceleration, ...]
+</financial_summary>
+
+<narrative_context>
+  [RAG chunks — reranked top-6, NARRATIVE ONLY, with chunk IDs]
+</narrative_context>
+
+<recent_news>
+  [date-filtered headlines, last 30d]
+</recent_news>
+
+<macro_snapshot>
+  [vix, spread, regime — WITHOUT the multiplier decision]
+</macro_snapshot>
+```
+
+**Deliberately absent from the variable block:** `ensemble_score`, momentum
+rank, regime multiplier, and any indication of *why* this ticker was selected.
+`<verdict>` asks CONFIRMED/REJECTED without ever stating what is being
+confirmed — the model evaluates the business; the funnel maps that onto its own
+flag afterwards.
+
+### Two arms in the shadow stage — this replaces the FinDER measurement
+
+- **Arm A** — anonymised, statements only, no RAG, no ticker. Kim's exact
+  setup, with a published 60.35% external reference point.
+- **Arm B** — named, full RAG dossier + news + macro.
+
+**The A→B delta IS the RAG pipeline's contribution**, measured on our data, on
+the decision we actually care about. This is the number the FinDER benchmark
+could not have given us (see the DECLINED entry above), and it arrives free
+with a stage already planned. Arm A doubles as an upstream sanity check: if we
+cannot reproduce ~60% on the anonymised task, something is broken before RAG
+and no amount of retrieval tuning will save it.
+
+### Prompt selection can happen OFFLINE and cheaply — anonymisation is the key
+
+Aman (2026-08-08): "we can run some tests to fully identify which prompt to use
+in buy side." Important methodological point that makes this cheap:
+
+**Anonymisation is exactly what makes historical evaluation valid.** The
+END-GOAL entry's ban on backtesting the analyst exists because Claude knows
+2018-24 outcomes for *named* companies. Strip the name, dates and identifying
+detail — Kim's own design — and the memorisation channel closes. So prompt
+variants can be baked off **offline against hundreds of historical
+ticker-quarters**, graded immediately against realised earnings direction, with
+no shadow months consumed and no holdout burned.
+
+Only the winning prompt then enters the forward shadow stage.
+
+**Limits of the offline bake-off (do not overclaim it):**
+- It selects only for the *statements-reasoning scaffold*. It is silent on how
+  well a prompt uses RAG context, news, or macro, because all three are
+  inherently identifying and cannot be anonymised.
+- So: offline bake-off picks the Arm A scaffold; the dossier-integration parts
+  of Arm B still need forward evaluation.
+
+**Multiple-testing discipline applies to prompts too.** Testing n prompt
+variants against the same shadow window and keeping the winner overfits that
+window exactly the way a feature sweep would. Either pre-commit the selection
+rule, or split the shadow months dev/holdout at the start. Offline selection
+is the cheap way to avoid spending shadow months on this at all.
+
+### OPEN — hold/sell layer prompt
+
+Aman flagged (2026-08-08) that the hold/sell layer needs its own prompt
+decision. Not yet designed. Recorded observations:
+
+**It is a structurally different question from the buy side.** Buy is
+cross-sectional and comparative ("is this a top-20 name this month?").
+Hold/sell is absolute, position-specific and path-dependent — conditioned on
+entry date, entry price, holding period, and *what has changed since entry*.
+
+**The prior verdict becomes an input — this is what `falsifiable_checkpoint`
+is for.** Month N's checkpoint is graded at month N+1 and fed back: "you
+predicted X; here is what happened; does the thesis still hold?" That turns the
+append-only verdict log into a self-grading loop and gives the hold/sell layer
+an input the buy layer structurally cannot have. Strong argument for keeping
+the checkpoint tag even though it is not the decision.
+
+**Behavioural hazard — decide whether the model sees P&L at all.**
+Showing unrealised P&L invites disposition-effect and anchoring behaviour
+([[papers/tversky_kahneman_1974_anchoring]], already in corpus). Argument for
+blinding: the correct question is "would I buy this today?", not "am I
+underwater?" Argument against: a genuine exit layer legitimately needs position
+state. Unresolved.
+
+**Cheapest candidate answer — there may be no second prompt.** The classic
+reduction is *"if I did not own this, would I buy it today?"* If yes, hold; if
+no, sell. That collapses hold/sell into the buy-side prompt plus a different
+downstream rule, and avoids validating a second prompt entirely. Counter: it
+ignores sell-specific signals (thesis broken, checkpoint failed, a named risk
+factor materialised) that a fresh cross-sectional buy evaluation would not
+weight properly. **Test the reduction first** — it is nearly free, and if it
+holds, a whole workstream disappears.
+
+**Interaction with the stalled Markov exit layer — resolve before building.**
+`src/exit/` (Zhang + Andrade DHMM) currently has **no verdict** and a known
+degeneracy: Zhang has no Andrade-independent decision surface, its price
+threshold is always breached (x\* ≈ 0.15-3% of p0), and there are zero Case II
+calibrations on the tested window, so the hard-stop path is structurally inert.
+See `backtests/exit_layer_vintage_and_andrade_off_2026-08-04.md`.
+
+An LLM hold/sell layer is a *different approach to the same problem*. Do not
+build it as a silent replacement — decide first whether the Markov layer is
+dead, parked, or pending re-derivation. **Two unvalidated exit layers is worse
+than one**, and stacking them would confound both.
+
+**Suggested insertion:** buy-side prompt + offline bake-off is the first
+`src/analyst/` session. Hold/sell prompt is a later session, gated on (a) the
+Markov exit layer's disposition and (b) the buy-side reduction test above.

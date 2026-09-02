@@ -267,6 +267,7 @@ def monthly_exit_review(
     calibration: MonthlyCalibration,
     current_price: float,
     rho: float = 0.03,
+    allow_andrade: bool = True,
 ) -> ExitDecision:
     """Monthly baseline exit decision from a pre-computed calibration.
 
@@ -300,6 +301,30 @@ def monthly_exit_review(
         lam2=cp.lam2,
         K=K_absolute,
     )
+
+    # ── Andrade kill-switch (Prompt 1C Task B) ───────────────────────────────
+    # Disables the Andrade override entirely, leaving Zhang as the only exit
+    # trigger. Used to MEASURE (rather than infer) the Zhang-only path: if the
+    # experimental Sharpe then equals the baseline exactly, Zhang contributes no
+    # independent triggers on this window and Andrade is the whole active surface.
+    if not allow_andrade:
+        andrade_override_active = False
+        andrade_reason = f"Andrade DISABLED (allow_andrade=False): {andrade.reason}"
+        zhang_fired = zhang_decision.action == "SELL"
+        action_off: Literal["HOLD", "SELL"] = "SELL" if zhang_fired else "HOLD"
+        return ExitDecision(
+            ticker=calibration.ticker,
+            action=action_off,
+            trigger="monthly_baseline" if zhang_fired else "no_action",
+            trigger_source="zhang" if zhang_fired else "none",
+            zhang_reason=zhang_decision.reason,
+            andrade_reason=andrade_reason,
+            current_price=current_price,
+            entry_price=calibration.entry_price,
+            K_fraction=calibration.K_fraction,
+            K_absolute=K_absolute,
+            calibration=calibration,
+        )
 
     # ── Regime gate on the Andrade override (REV 4 fix B) ────────────────────
     mult = calibration.regime_signal["multiplier"]

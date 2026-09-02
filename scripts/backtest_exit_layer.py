@@ -84,9 +84,15 @@ if str(ROOT) not in sys.path:
 
 from src.exit.exit_manager import (  # noqa: E402
     DEFAULT_K_FRACTION,
+    _ANDRADE_TO_STATE,
     calibrate_for_month,
     daily_hard_stop,
     monthly_exit_review,
+)
+from src.exit.zhang_optimal import (  # noqa: E402
+    case1_threshold,
+    case2_thresholds,
+    phi,
 )
 from src.live.scorer import score_months  # noqa: E402
 from src.strategies.ensemble.portfolio_builder import MIN_SCORE, TOP_N  # noqa: E402
@@ -101,6 +107,12 @@ DB_PATH = ROOT / _CFG["data"]["paths"]["db"]
 HOLDOUT_SCORES = ROOT / "data" / "processed" / "holdout_scores.parquet"
 LOG_DIR = ROOT / "logs"
 
+FEATURE_MATRIX = ROOT / "data" / "processed" / "ensemble_feature_matrix.parquet"
+# Set by --vintage; echoed into every report so no run is ambiguous about what
+# it read. None = live repo data (subject to nightly AV backfill revision).
+VINTAGE_DIR: Path | None = None
+VINTAGE_MANIFEST: dict | None = None
+
 RHO = 0.03
 # REV 4: transaction cost is now K_fraction × entry_price (a fixed dollar amount
 # per position), computed inside calibrate_for_month — not a flat K=0.01. We pass
@@ -112,6 +124,100 @@ CALIB_LOOKBACK = 250
 REV3_SHARPE = {"baseline": 1.5871, "experimental": 1.0783, "hard_stop": 1.5871}
 
 logger = logging.getLogger("backtest_exit_layer")
+
+# Prompt 1C guard: Prompt 1 was initially run under /opt/anaconda3/bin/python3
+# (numpy 1.26.3 / sklearn 1.2.2) by mistake. Fail loudly rather than silently
+# producing numbers under the wrong stack.
+EXPECTED_VERSIONS = {"numpy": "2.4.4", "sklearn": "1.8.0", "pandas": "2.3.3"}
+
+
+def _assert_interpreter() -> dict:
+    import numpy
+    import pandas
+    import sklearn
+    block = {
+        "sys_executable": sys.executable,
+        "numpy": numpy.__version__,
+        "sklearn": sklearn.__version__,
+        "pandas": pandas.__version__,
+    }
+    if ".venv" not in block["sys_executable"] or "anaconda" in block["sys_executable"].lower():
+        raise SystemExit(f"ABORT: not the repo .venv → {block['sys_executable']}")
+    bad = {k: block[k] for k, v in EXPECTED_VERSIONS.items() if block[k] != v}
+    if bad:
+        raise SystemExit(
+            f"ABORT: interpreter version mismatch {bad}, expected {EXPECTED_VERSIONS}")
+    logger.info("AUDIT: interpreter %s  numpy=%s sklearn=%s pandas=%s",
+                block["sys_executable"], block["numpy"], block["sklearn"],
+                block["pandas"])
+    return block
+
+
+# ── Frozen vintage ───────────────────────────────────────────────────────────
+
+def use_vintage(vintage_dir: str | Path) -> dict:
+    """Repoint every data input at a frozen snapshot from freeze_vintage.py.
+
+    Verifies each frozen file's sha256 against MANIFEST.json before use, so a
+    tampered or partially-copied snapshot fails loudly rather than silently
+    producing numbers attributed to the wrong vintage.
+
+    Rebinds this module's DB_PATH *and* regime_gate.DB_PATH — the as-of regime
+    signal reads macro_series from its own module-level path, so repointing only
+    this module would leave the regime leg reading live data.
+    """
+    import hashlib
+    import json
+
+    global VINTAGE_DIR, VINTAGE_MANIFEST, DB_PATH, FEATURE_MATRIX
+
+    vdir = Path(vintage_dir)
+    if not vdir.is_absolute():
+        vdir = ROOT / vdir
+    manifest_path = vdir / "MANIFEST.json"
+    if not manifest_path.exists():
+        raise SystemExit(f"ABORT: no MANIFEST.json in {vdir}")
+    manifest = json.loads(manifest_path.read_text())
+
+    for name, meta in manifest["frozen"].items():
+        f = vdir / meta["snapshot_relpath"]
+        if not f.exists():
+            raise SystemExit(f"ABORT: frozen file missing: {f}")
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            while block := fh.read(1 << 20):
+                h.update(block)
+        if h.hexdigest() != meta["sha256"]:
+            raise SystemExit(
+                f"ABORT: {name} sha256 mismatch — snapshot corrupt or modified\n"
+                f"  manifest={meta['sha256']}\n  actual  ={h.hexdigest()}")
+
+    # Assert the frozen model is still the one the snapshot was taken against.
+    model_meta = manifest["referenced"].get("ensemble_models.pkl", {})
+    if model_meta:
+        h = hashlib.md5()
+        with open(ROOT / model_meta["source_relpath"], "rb") as fh:
+            while block := fh.read(1 << 20):
+                h.update(block)
+        if h.hexdigest() != model_meta.get("md5"):
+            raise SystemExit(
+                f"ABORT: models/ensemble_models.pkl md5 {h.hexdigest()} != "
+                f"manifest {model_meta.get('md5')}")
+
+    DB_PATH = vdir / "quant_research.db"
+    FEATURE_MATRIX = vdir / "ensemble_feature_matrix.parquet"
+    VINTAGE_DIR = vdir
+    VINTAGE_MANIFEST = manifest
+
+    # The as-of regime signal reads macro_series via its OWN module global.
+    from src.strategies.ensemble import regime_gate as _rg
+    _rg.DB_PATH = DB_PATH
+
+    logger.info("VINTAGE: frozen snapshot %s (all %d files sha256-verified)",
+                vdir, len(manifest["frozen"]))
+    logger.info("VINTAGE: price_vintage sha256=%s  git_head=%s",
+                manifest["price_vintage"]["sha256"], manifest["git_head"])
+    return manifest
 
 
 # ── Data loading ─────────────────────────────────────────────────────────────
@@ -155,17 +261,43 @@ def _annualized_sharpe(monthly: pd.Series) -> float:
 
 # ── Core backtest ────────────────────────────────────────────────────────────
 
-def run_backtest(start: str, end: str) -> dict:
+def run_backtest(start: str, end: str, allow_andrade: bool = True,
+                 emit_decisions: bool = False) -> dict:
     # Pin the price vintage FIRST: the prices table is retroactively rewritten by
     # the AV backfill, so a result is only comparable against another run on the
     # same fingerprint. See src/utils/data_vintage.py.
     vintage = price_vintage(DB_PATH, start, end)
     logger.info("AUDIT: %s", format_vintage(vintage))
+    logger.info("AUDIT: data source = %s",
+                f"FROZEN VINTAGE {VINTAGE_DIR}" if VINTAGE_DIR
+                else "LIVE repo data (subject to AV backfill revision)")
+    logger.info("AUDIT: allow_andrade = %s", allow_andrade)
 
-    logger.info("Regenerating holdout_scores.parquet for [%s, %s] …", start, end)
-    score_months(start=start, end=end)  # overwrites HOLDOUT_SCORES
+    # Scores are regenerated rather than read from the snapshot, then checked
+    # against the frozen copy — that verifies the frozen feature matrix + frozen
+    # model still reproduce the frozen scores bit-for-bit.
+    scores_out = (LOG_DIR / "holdout_scores_run.parquet") if VINTAGE_DIR else None
+    logger.info("Regenerating scores for [%s, %s] …", start, end)
+    score_months(start=start, end=end,
+                 feature_matrix_path=FEATURE_MATRIX,
+                 output_path=scores_out)
 
-    scores = pd.read_parquet(HOLDOUT_SCORES)
+    scores_path = scores_out or HOLDOUT_SCORES
+    if VINTAGE_DIR is not None:
+        frozen_scores = pd.read_parquet(VINTAGE_DIR / "holdout_scores.parquet")
+        regen = pd.read_parquet(scores_path)
+        a = frozen_scores.sort_values(["date", "ticker"]).reset_index(drop=True)
+        b = regen.sort_values(["date", "ticker"]).reset_index(drop=True)
+        same = (len(a) == len(b)
+                and bool((a["ensemble_score"].values == b["ensemble_score"].values).all()))
+        logger.info("VINTAGE: regenerated scores match frozen copy bit-for-bit: %s",
+                    same)
+        if not same:
+            raise SystemExit(
+                "ABORT: regenerated scores differ from the frozen snapshot — the "
+                "snapshot is not capturing every input the scorer reads")
+
+    scores = pd.read_parquet(scores_path)
     scores["date"] = pd.to_datetime(scores["date"])
     scores = scores.sort_values(["date", "ticker"])
     month_ends = sorted(scores["date"].unique())
@@ -181,10 +313,26 @@ def run_backtest(start: str, end: str) -> dict:
     k_abs_values: list[float] = []     # every K_absolute used (for distribution)
     hard_stop_rows: list[dict] = []    # per-month hard-stop trigger count
     regime_asof_rows: list[dict] = []  # per-month point-in-time regime reading
+    zhang_rows: list[dict] = []        # per-calibration Zhang case / threshold
+    decision_rows: list[dict] = []     # Prompt 2 per-decision emit (all evaluated
+                                       # (month, ticker) pairs, not just big-moves)
+
+    # Prompt 2: pre-compute the top-N book at each month_end so we can populate
+    # in_book_next_month for each SELL flag without re-running the selection
+    # inside the ticker loop.
+    _book_by_month: dict[str, set[str]] = {}
+    for _me in month_ends:
+        _me_ts = pd.Timestamp(_me)
+        _ms = scores[scores["date"] == _me_ts]
+        _above = _ms[_ms["ensemble_score"] > MIN_SCORE]
+        _sel = _above.nlargest(min(TOP_N, len(_above)), "ensemble_score")
+        _book_by_month[_me_ts.date().isoformat()] = set(_sel["ticker"].tolist())
 
     for i, me in enumerate(month_ends[:-1]):
         me = pd.Timestamp(me)
         me_next = pd.Timestamp(month_ends[i + 1])
+        me_next2 = pd.Timestamp(month_ends[i + 2]) if (i + 2) < len(month_ends) else None
+        next_book = _book_by_month.get(me_next.date().isoformat(), set())
 
         # POINT-IN-TIME regime for this month (2026-08-03 lookahead fix).
         # Previously calibrate_for_month called get_live_regime_signal() per
@@ -244,13 +392,33 @@ def run_backtest(start: str, end: str) -> dict:
                 continue
 
             k_abs_values.append(calib.K_absolute)
+
+            # ── Zhang regime / threshold diagnostics (Prompt 1C Task B) ──
+            _zp = calib.zhang_params
+            _args = (RHO, _zp.f1, _zp.f2, _zp.lam1, _zp.lam2)
+            _phi = phi(*_args)
+            if _phi <= 0.0:
+                _case, _xs = "never_sell", float("nan")
+            elif RHO <= _zp.f1:
+                _case = "case1"
+                _xs = case1_threshold(*_args, calib.K_absolute)
+            else:
+                _case = "case2"
+                _xs, _ = case2_thresholds(*_args, calib.K_absolute)
+            zhang_rows.append({
+                "month": me.date().isoformat(), "ticker": t, "case": _case,
+                "state": 2 if calib.andrade_signal.action in ("SELL", "STRONG_SELL") else 1,
+                "phi": _phi, "f1": _zp.f1, "x_star": _xs, "p0": p0,
+                "x_star_over_p0": (_xs / p0) if (p0 > 0 and np.isfinite(_xs)) else float("nan"),
+            })
             # A STRONG_SELL that the regime gate suppressed (RISK_ON tape).
             if (calib.andrade_signal.action == "STRONG_SELL"
                     and calib.regime_signal["multiplier"] > NEUTRAL_MULT):
                 suppressed += 1
 
             # ── monthly experimental review ──
-            review = monthly_exit_review(calib, p0, rho=RHO)
+            review = monthly_exit_review(calib, p0, rho=RHO,
+                                         allow_andrade=allow_andrade)
             cnt[review.trigger_source] += 1
             exp_ret = 0.0 if review.action == "SELL" else ret_full
 
@@ -277,6 +445,75 @@ def run_backtest(start: str, end: str) -> dict:
                     "ticker": t,
                     "ret_full": ret_full,
                     "trigger_source": review.trigger_source,
+                })
+
+            # ── Prompt 2: per-decision emit ──────────────────────────────
+            if emit_decisions:
+                # Compute pivotality on the observed row.  Semantics from
+                # Prompt 1D §B.1: force each condition True and False with all
+                # others held fixed, pivotal iff the two decisions differ.  On
+                # this window Case II is 0/225, so pivotality is nonzero only
+                # on Case I rows (the never-sell / Case II branches cannot
+                # produce a Zhang SELL under any state or price).
+                _andr_action_str = calib.andrade_signal.action
+                _state = _ANDRADE_TO_STATE[_andr_action_str]
+                _mult = calib.regime_signal["multiplier"]
+                _andr_override = (
+                    allow_andrade
+                    and _andr_action_str == "STRONG_SELL"
+                    and _mult <= NEUTRAL_MULT
+                )
+                _price_pivotal = False
+                _state_pivotal = False
+                _case_pivotal = False
+                _xstar0 = float("nan")
+                if _case == "case1":
+                    _price_pivotal = (_state == 2) and (not _andr_override)
+                    _state_pivotal = (p0 >= _xs) and (not _andr_override)
+                    _case_pivotal = (_state == 2) and (p0 >= _xs) and (not _andr_override)
+                    # x*_0 is only defined in Case II; NaN for Case I.
+                elif _case == "case2":
+                    try:
+                        _, _xstar0 = case2_thresholds(*_args, calib.K_absolute)
+                    except ValueError:
+                        _xstar0 = float("nan")
+
+                # ret_next_month = ticker's return over the *following* month
+                # (me_next → me_next2). NaN when we're at the last month.
+                _ret_next_month = float("nan")
+                if me_next2 is not None:
+                    _p_next2 = _price_on_or_before(wide, t, me_next2)
+                    _p_next = p1
+                    if (not np.isnan(_p_next)) and (not np.isnan(_p_next2)) and _p_next > 0:
+                        _ret_next_month = _p_next2 / _p_next - 1.0
+
+                decision_rows.append({
+                    "month": me.date().isoformat(),
+                    "ticker": t,
+                    "action": review.action,
+                    "trigger_source": review.trigger_source,
+                    "andrade_action": _andr_action_str,
+                    "andrade_confidence": float("nan"),  # DHMM Signal exposes no scalar confidence
+                    "zhang_case": _case,
+                    "zhang_threshold_xstar": float(_xs) if np.isfinite(_xs) else float("nan"),
+                    "zhang_xstar0": _xstar0,
+                    "p0": float(p0),
+                    "ret_full": float(ret_full),
+                    "regime_multiplier": float(_mult),
+                    "in_book_next_month": bool(t in next_book),
+                    "ret_next_month": _ret_next_month,
+                    "price_test_pivotal": bool(_price_pivotal),
+                    "state_test_pivotal": bool(_state_pivotal),
+                    "case_gate_pivotal": bool(_case_pivotal),
+                    "phi": float(_phi),
+                    "f1": float(_zp.f1),
+                    "f2": float(_zp.f2),
+                    "lam1": float(_zp.lam1),
+                    "lam2": float(_zp.lam2),
+                    "state": int(_state),
+                    "andrade_override_active": bool(_andr_override),
+                    "K_absolute": float(calib.K_absolute),
+                    "entry_price": float(calib.entry_price),
                 })
 
         if not base_rets:
@@ -328,6 +565,9 @@ def run_backtest(start: str, end: str) -> dict:
         "big_moves": big_moves,
         "price_vintage": vintage,
         "regime_asof": regime_asof_rows,
+        "zhang_diag": zhang_rows,
+        "allow_andrade": allow_andrade,
+        "decision_rows": decision_rows,
     }
 
 
@@ -359,6 +599,17 @@ def write_report(result: dict, start: str, end: str) -> Path:
     v = result["price_vintage"]
     lines.append(f"  {format_vintage(v)}")
     lines.append(f"  price_vintage sha256 (full): {v['sha256']}")
+    if VINTAGE_DIR is not None:
+        lines.append(f"  DATA SOURCE: FROZEN VINTAGE {VINTAGE_DIR}")
+        lines.append(f"    manifest git_head={VINTAGE_MANIFEST['git_head']}  "
+                     f"created={VINTAGE_MANIFEST['created_utc']}")
+        lines.append(f"    frozen files sha256-verified: "
+                     f"{', '.join(sorted(VINTAGE_MANIFEST['frozen']))}")
+    else:
+        lines.append("  DATA SOURCE: LIVE repo data (NOT frozen — the nightly AV "
+                     "backfill revises history)")
+    lines.append(f"  allow_andrade = {result['allow_andrade']}"
+                 f"{'   ← ANDRADE DISABLED (Zhang-only)' if not result['allow_andrade'] else ''}")
     lines.append("═" * 72)
 
     lines.append("\n── Annualized Sharpe (×√12) ──")
@@ -458,6 +709,37 @@ def write_report(result: dict, start: str, end: str) -> Path:
     else:
         lines.append("  (none)")
 
+    # ── Zhang Case I / Case II split (Prompt 1C Task B) ───────────────────
+    lines.append("\n── Zhang regime split across ALL calibrations ──")
+    zd = pd.DataFrame(result["zhang_diag"])
+    if not zd.empty:
+        counts = zd["case"].value_counts().to_dict()
+        lines.append(f"  n_calibrations = {len(zd)}")
+        for k in ("case1", "case2", "never_sell"):
+            n = int(counts.get(k, 0))
+            lines.append(f"    {k:<12} {n:4d}  ({n/len(zd)*100:5.1f}%)")
+        lines.append("  Case I  = rho ≤ f1 → sell only in state 2 above x*; never hard-stops")
+        lines.append("  Case II = rho > f1 → x* and mandatory x*_0 both live")
+        st = zd["state"].value_counts().to_dict()
+        lines.append(f"  Andrade-derived state: state1(uptick)={int(st.get(1,0))}  "
+                     f"state2(downtick)={int(st.get(2,0))}")
+        lines.append("  (Zhang can only SELL in state 2 — state 1 never sells in either case)")
+
+        r = zd["x_star_over_p0"].replace([np.inf, -np.inf], np.nan).dropna()
+        lines.append("\n── x* relative to p0 (x*/p0; SELL needs price ≥ x*, i.e. ratio ≤ 1) ──")
+        if not r.empty:
+            lines.append(f"  n={len(r)}  min={r.min():.4g}  p05={r.quantile(.05):.4g}  "
+                         f"median={r.median():.4g}  p95={r.quantile(.95):.4g}  max={r.max():.4g}")
+            n_reach = int((r <= 1.0).sum())
+            lines.append(f"  calibrations where p0 ≥ x* at month-end (Zhang would fire "
+                         f"if state 2): {n_reach} / {len(r)}")
+            n_state2_reach = int(((zd["x_star_over_p0"] <= 1.0) & (zd["state"] == 2)).sum())
+            lines.append(f"  … AND in state 2 (actual Zhang SELL): {n_state2_reach}")
+        else:
+            lines.append("  (no finite x* — all never-sell)")
+    else:
+        lines.append("  (no calibrations)")
+
     # ── K_absolute distribution ───────────────────────────────────────────
     lines.append("\n── K_absolute distribution across all (ticker, month) calibrations ──")
     lines.append(f"  K_fraction = {K_FRACTION}  (K_absolute = K_fraction × entry_price)")
@@ -476,27 +758,37 @@ def write_report(result: dict, start: str, end: str) -> Path:
         r4 = sharpe[key]
         lines.append(f"  {path_label:<14}{r3:>+14.4f}{r4:>+14.4f}{r4 - r3:>+16.4f}")
 
-    # ── Verdict against the REV 4 rules ───────────────────────────────────
+    # ── Standing decision rule (diagnostic batch 2026-07-30) ──────────────
+    # Prompt 1D Task C: the old rule-2/rule-3 "PASS/FAIL" verdict was retired.
+    # It compared this run's experimental Sharpe against the REV 3 numbers and
+    # emitted FULL PASS / MINIMUM PASS / FAIL — a verdict on the layer that the
+    # batch's actual KEEP/SHELVE rule does not authorise this script to make.
+    # None of (a)/(b)/(c) below is computable from what run_backtest returns:
+    # (a) needs per-SELL ret_full, (b) needs the paired monthly series under a
+    # sign test and a paired t-test, (c) needs the redistribute-to-survivors
+    # variant and a max-drawdown series. This block therefore only RESTATES the
+    # rule and reports the integrity check it can actually run.
     exp_r4 = sharpe["experimental"]
     base_drift = abs(sharpe["baseline"] - REV3_SHARPE["baseline"])
-    rule2 = exp_r4 > REV3_SHARPE["experimental"]        # improve on REV 3
-    rule3 = exp_r4 >= REV3_SHARPE["baseline"]           # meet baseline
-    if rule3:
-        verdict = "FULL PASS (rules 2 & 3)"
-    elif rule2:
-        verdict = "MINIMUM PASS (rule 2 only)"
-    else:
-        verdict = "FAIL (below rule 2)"
 
     lines.append("\n" + "═" * 72)
-    lines.append(f"  baseline drift vs REV 3: {base_drift:.6f} "
+    lines.append("  STANDING DECISION RULE — diagnostic batch 2026-07-30")
+    lines.append("  KEEP the layer only if ALL THREE hold:")
+    lines.append("    (a) SELL-flagged positions have a NEGATIVE mean ret_full")
+    lines.append("    (b) the paired monthly difference is significant at 0.05 by")
+    lines.append("        BOTH sign test and paired t-test, in the layer's favour")
+    lines.append("    (c) the redistribute-to-survivors variant still beats baseline")
+    lines.append("        on Sharpe OR cuts max drawdown by ≥ 3 percentage points")
+    lines.append("  SHELVE if (a) fails.  INCONCLUSIVE (→ shelve, noted) if (a) holds")
+    lines.append("  but (b) fails.")
+    lines.append("")
+    lines.append("  NOT EVALUATED HERE — this script measures none of (a), (b), (c).")
+    lines.append("  Sharpe alone does not decide the layer. Prompt 2 tests (a).")
+    lines.append("")
+    lines.append(f"  integrity check — baseline drift vs REV 3: {base_drift:.6f} "
                  f"({'OK' if base_drift <= 1e-4 else 'DRIFT > 1e-4 — INVESTIGATE'})")
-    lines.append(f"  rule 2 (exp > {REV3_SHARPE['experimental']:+.4f}): "
-                 f"{'PASS' if rule2 else 'FAIL'}")
-    lines.append(f"  rule 3 (exp ≥ {REV3_SHARPE['baseline']:+.4f}): "
-                 f"{'PASS' if rule3 else 'FAIL'}")
-    lines.append(f"  VERDICT: {verdict}   experimental Sharpe {exp_r4:+.4f} "
-                 f"(Δ vs baseline {d_exp:+.4f})")
+    lines.append(f"  observed: experimental Sharpe {exp_r4:+.4f} "
+                 f"(Δ vs baseline {d_exp:+.4f}) — reported, not adjudicated")
     lines.append("═" * 72)
 
     report = "\n".join(lines)
@@ -514,9 +806,82 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Diagnostic exit-layer backtest")
     ap.add_argument("--start", default="2025-01-01")
     ap.add_argument("--end", default="2026-06-30")
+    ap.add_argument(
+        "--vintage", default=None, metavar="DIR",
+        help="Read all data inputs from a frozen snapshot created by "
+             "scripts/freeze_vintage.py (sha256-verified against its "
+             "MANIFEST.json). Omit to read live repo data, which the nightly AV "
+             "backfill retroactively revises.")
+    ap.add_argument(
+        "--no-andrade", action="store_true",
+        help="Disable the Andrade override entirely, leaving Zhang as the only "
+             "exit trigger (Prompt 1C Task B).")
+    ap.add_argument(
+        "--emit-decisions", default=None, metavar="PATH",
+        help="Prompt 2: write a per-decision parquet for every (month, ticker) "
+             "evaluated on the Andrade-ON path, and re-run the Zhang-only path "
+             "to assert baseline/experimental/hard_stop/Zhang-only Sharpes are "
+             "bit-identical to the frozen Prompt-1D reference values (tolerance "
+             "1e-6). Fails loudly on drift.")
     args = ap.parse_args()
 
-    result = run_backtest(args.start, args.end)
+    _assert_interpreter()
+    if args.vintage:
+        use_vintage(args.vintage)
+    else:
+        logger.warning("No --vintage given — reading LIVE repo data, which the "
+                       "nightly AV backfill revises. Results may not be "
+                       "comparable across runs.")
+
+    if args.emit_decisions:
+        # Reference Sharpes from Prompt 1D §"Reference Sharpe figures"
+        # (backtests/exit_layer_units_and_attribution_2026-08-04.md), which
+        # were themselves reproduced from Prompt 1C at 0.0e+00 drift on the
+        # frozen vintage. Tolerance 1e-6 per Prompt 2.
+        EXPECTED = {
+            "baseline":       1.587144507439707,
+            "experimental":   1.282216655915358,
+            "hard_stop":      1.587144507439707,
+            "zhang_only":     1.591542820613977,
+        }
+        # Run Andrade-ON (this is the run whose decisions we emit) then
+        # Andrade-OFF (to check the Zhang-only Sharpe).
+        result_on = run_backtest(args.start, args.end,
+                                 allow_andrade=True, emit_decisions=True)
+        result_off = run_backtest(args.start, args.end,
+                                  allow_andrade=False, emit_decisions=False)
+
+        got = {
+            "baseline":     result_on["sharpe"]["baseline"],
+            "experimental": result_on["sharpe"]["experimental"],
+            "hard_stop":    result_on["sharpe"]["hard_stop"],
+            "zhang_only":   result_off["sharpe"]["experimental"],
+        }
+        drift = {k: abs(got[k] - EXPECTED[k]) for k in EXPECTED}
+        for k, d in drift.items():
+            logger.info("SHARPE ASSERT  %-12s got=%.15f expected=%.15f drift=%.3e",
+                        k, got[k], EXPECTED[k], d)
+        bad = {k: d for k, d in drift.items() if d > 1e-6}
+        if bad:
+            raise SystemExit(
+                f"ABORT: Sharpe drift beyond 1e-6 — instrumentation is not "
+                f"return-neutral: {bad}")
+
+        emit_path = Path(args.emit_decisions)
+        if not emit_path.is_absolute():
+            emit_path = ROOT / emit_path
+        emit_path.parent.mkdir(parents=True, exist_ok=True)
+        dec_df = pd.DataFrame(result_on["decision_rows"])
+        dec_df.to_parquet(emit_path, index=False)
+        logger.info("Wrote %d per-decision rows → %s", len(dec_df), emit_path)
+
+        # Still write the standard report for the Andrade-ON run.
+        report_path = write_report(result_on, args.start, args.end)
+        logger.info("Report written → %s", report_path)
+        return
+
+    result = run_backtest(args.start, args.end,
+                          allow_andrade=not args.no_andrade)
     path = write_report(result, args.start, args.end)
     logger.info("Report written → %s", path)
 

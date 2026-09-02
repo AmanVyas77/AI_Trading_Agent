@@ -63,11 +63,26 @@ census will most likely show why.
 
 ## VERIFIED CONTEXT (established 2026-07-30 — do not re-derive)
 
-- **Repo path is volatile.** Do NOT hardcode it. Every session starts with:
-  `basename "$PWD"` must equal `Ai Trading Agent`, and `git rev-parse --show-toplevel`
-  must equal `$PWD`. If not, STOP and ask Aman for the current path. (It has moved three
-  times; the path written in `MarkovExit_Prompts.md` line ~95 —
-  `/Users/aman/Projects/Ai Trading Agent` — is STALE and no longer exists.)
+- **REPO PATH — read this before anything else.** As of 2026-08-03 the repo is at
+  **`/Users/aman/dev/Ai Trading Agent`**. If your shell starts anywhere else, `cd` there
+  first.
+
+  **DEAD paths. Empty directories still exist at some of these. Never work in them:**
+  `~/Projects/Ai Trading Agent`, `~/Desktop/Ai Trading Agent`,
+  `~/Desktop/Ai Trading Agent OLD-DO-NOT-USE`, `~/Desktop/Stock_Project/Ai Trading Agent`.
+
+  Guard, and ALL FOUR must pass: (1) `basename "$PWD"` == `Ai Trading Agent`;
+  (2) `git rev-parse --show-toplevel` == `$PWD`; (3) `models/ensemble_models.pkl` exists
+  with md5 `296e589f4da205eb1d171c2121d90f82`; (4) `scripts/backtest_exit_layer.py` and
+  `src/exit/zhang_optimal.py` both exist.
+
+  **If the guard fails, the overwhelmingly likely cause is that you are in one of the dead
+  directories — NOT that data was lost.** `basename` alone is not sufficient to identify
+  the repo, because every dead path has the same basename. Before reporting any kind of
+  loss or damage, `cd /Users/aman/dev/Ai Trading Agent` and re-run all four checks. Only
+  if the guard fails THERE is something actually wrong, and in that case stop and tell
+  Aman — do not attempt recovery yourself. He has the repo on GitHub
+  (`AmanVyas77/AI_Trading_Agent`), a `git bundle`, and file-level backups.
 - **I/O hazard RESOLVED 2026-08-03.** The repo previously lived under `~/Desktop/` inside
   iCloud's synced Desktop tree and threw `OSError [Errno 35] Resource deadlock avoided` on
   cold files (it once crashed `git status` with a bus error). It has been MOVED OUT of the
@@ -168,12 +183,48 @@ Print your findings; do not commit.
 
 # PROMPT 2 — Exit-decision replay and hit-rate decomposition
 
-Prerequisite: Prompt 1 returned RECONCILED. Run the same path/branch/md5 guard first.
+## ⚠️ AMENDED 2026-08-19 — read this before the body of Prompt 2
 
-**Question this answers.** The −0.5089 has never been attributed to individual decisions.
-We know Andrade drove every override, but not whether those overrides were *wrong* — only
-that the aggregate got worse. A signal can be right 60% of the time and still lose if the
-misses are large. We need the per-decision distribution.
+Prompts 1, 1C and 1D have all run. Their results change several numbers hard-coded below.
+**Where this amendment and the body disagree, the amendment wins.**
+
+Prerequisites, all met: Prompt 1 **RECONCILED** (report:
+`backtests/exit_layer_reconciliation_2026-07-30.md`). Prompt 1C froze the vintage and its
+Andrade-off check **FAILED**, overturning a premise. Prompt 1D resolved the units question
+to **FORK 2** (report: `backtests/exit_layer_units_and_attribution_2026-08-04.md`).
+
+Run the four-part guard, then run everything with
+`--vintage backtests/vintage_2026-08-04`. Obey the numeric-provenance rule from Prompt 1D:
+every number cites the file it was read from; nothing transcribed from memory; anything
+quoted rather than recomputed is labelled `[carried]`.
+
+**Superseded facts — do NOT rely on the body's versions of these:**
+
+- Experimental Sharpe is now **+1.2822**, not +1.0783. The as-of regime lookahead was
+  fixed (`get_regime_signal_asof()`); the old figure was contaminated. Δ vs baseline is
+  **−0.3049**, not −0.5089. Every mention of −0.5089 or 1.0783 below is stale.
+- **"Zhang never triggers independently" is FALSE.** Zhang fires 12 times in every
+  configuration. The old `zhang=0` column meant zhang-*only*; the 12 sat inside `both`.
+  Zhang-only Sharpe is 1.5915 vs baseline 1.5871 — a difference to be read as noise
+  (T=17, 12 sells), not as an edge.
+- `Zhang SELL ⟺ Case I ∧ state 2`, verified exactly. The **price test never binds**:
+  `p0 ≥ x*` in 45/45 Case I calibrations, minimum margin 33.7×. Units are correct
+  (`[x*] = [K]`, dollars vs dollars) — it is economically inert, not a bug. The paper's
+  own AAPL example is degenerate the same way (x* = $0.0172 against a $542.10 sell).
+- **Case II is 0/225 and unreachable** (`f1` min 2.592 vs ρ = 0.03), independent of K. The
+  daily hard-stop is structurally inert; `hard_stop == baseline` is a tautology.
+- The only Zhang component that changes decisions is the **Φ / Case-I gate**, which blocks
+  46 of 58 state-2 rows. Removing Zhang wholesale would take SELLs from 12 to 58 — so it
+  is NOT a no-op, and Task D below is what decides its fate.
+- Use **pivotality** semantics for attribution, not the old zhang/andrade/both labels:
+  `price_test_pivotal` 8, `state_test_pivotal` 41 (62 coupled), `case_gate_pivotal` 8.
+  Note the 8 price-pivotal rows are pivotal only as the last condition standing — the
+  price test is True on 45/45 with a 34× minimum margin and has zero discriminating power.
+
+**Question this answers.** The drag has never been attributed to individual decisions.
+We know Andrade drives it, but not whether those overrides were *wrong* — only that the
+aggregate got worse. A signal can be right 60% of the time and still lose if the misses
+are large. We need the per-decision distribution.
 
 We also need to close out a design question Aman raised: whether a "re-entry / buy-back
 gate" for force-sold names could recover the drag. A read of the code says no — there is
@@ -191,9 +242,16 @@ currently captured in `big_moves` (line ~239). Write to
 `regime_multiplier`, `in_book_next_month` (bool), `ret_next_month` (the ticker's return
 over the *following* month, NaN if unavailable).
 
-Constraint: the three existing return paths must produce **bit-identical** Sharpe numbers
-after your change (+1.5871 / +1.0783 / +1.5871). Assert this in the script and fail loudly
-if it drifts beyond 1e-4. This is instrumentation only.
+Constraint: the return paths must be **bit-identical** after your change. Against
+`--vintage backtests/vintage_2026-08-04` the current values are baseline **+1.5871**,
+experimental **+1.2822**, hard-stop **+1.5871**, Zhang-only **+1.5915**. Assert all four
+and fail loudly on drift beyond 1e-6 (1C reproduced the frozen vintage at 0.0e+00, so 1e-4
+is far too loose). This is instrumentation only.
+
+Add two fields to the record beyond the list above: `price_test_pivotal`,
+`state_test_pivotal`, `case_gate_pivotal` (from Prompt 1D), and `phi` — the raw value of
+`Φ = (ρ+λ1−f1)(ρ+λ2−f2) − λ1λ2` — plus the four fitted parameters `f1`, `f2`, `λ1`, `λ2`.
+Task D needs them.
 
 **Task B — decompose.** From the parquet, compute and report:
 
@@ -226,9 +284,60 @@ if it drifts beyond 1e-4. This is instrumentation only.
    the ceiling does not beat baseline, no realisable re-entry gate can, and the direction
    is dead. Report the ceiling Sharpe explicitly.
 
-**Deliverable.** `backtests/exit_decision_analysis_2026-07-30.md` with all eight numbered
-results, the parquet, and a plain-English two-paragraph reading of what they mean. State
-whether pre-committed condition (a) — negative mean `ret_full` given SELL — holds.
+## TASK D — Φ stability under estimation error (ADDED 2026-08-19; this decides the Zhang leg)
+
+**Why.** Prompt 1D found that Φ differences two terms of order 1.65×10⁴ down to a median
+`|Φ|` of 86.8 — 0.52% of the input magnitude — and that **169 of 225 calibrations sit
+within 1% of the sign flip**. Φ's sign is what assigns Case I, and the Case-I gate is the
+only Zhang component that changes any decision. So the question is whether that gate
+survives the uncertainty in its own inputs.
+
+Back-of-envelope motivating this, to be replaced by your measured numbers: fitted `λ1`
+median 123.5/yr implies mean regime duration ≈3 days; over a 250-day window, if roughly
+half the time is spent in state 1, you observe ~60 exits from it, giving a relative
+standard error on `λ̂1` near `1/√60` ≈ 13%. Thirteen percent of input error against a
+one percent sign-flip margin would mean the gate is noise. **Measure it; do not assume
+it.**
+
+9. **Estimate the parameter standard errors properly.** For each of the 225 calibrations,
+   derive SEs for `f1`, `f2`, `λ1`, `λ2` from the estimator actually used in
+   `exit_manager.calibrate_for_month` — asymptotic (observed Fisher information / inverse
+   Hessian) if the estimator admits it, otherwise a nonparametric block bootstrap over the
+   250-day window with block length ≥ the fitted mean regime duration. State which you
+   used and why. Report the distribution of relative SE per parameter, and the realised
+   transition counts per calibration (this replaces the ~60 guess above).
+10. **Perturbation test.** Draw N = 1000 parameter vectors per calibration from the
+    sampling distribution implied by those SEs, respecting the estimated correlation
+    between parameters — a diagonal draw will understate stability if the parameters
+    covary, so use the full covariance where available and say so if you cannot. For each
+    draw recompute Φ, the Case assignment, x*, and the resulting SELL/HOLD decision.
+11. **Report, per calibration and in aggregate:** the fraction of draws that flip the sign
+    of Φ; the fraction that flip the Case assignment; the fraction that flip the final
+    decision. Then the headline: **across all 225 calibrations, what fraction of decisions
+    are unstable at the parameters' own estimation error?**
+12. **Propagate to the portfolio.** For a sample of at least 200 perturbed worlds, re-run
+    the experimental path end-to-end and report the resulting distribution of experimental
+    Sharpe. Give the 5th/50th/95th percentiles. Compare that spread against the −0.3049
+    point estimate. If the spread swamps the effect, the layer's measured performance is
+    not identified at this sample size regardless of hit rate.
+13. **Interpretation, stated plainly, no hedging.** If a majority of decisions flip under
+    the parameters' own uncertainty, then the Case-I gate is noise, Zhang contributes
+    nothing reliable, and no tuning of K or ρ rescues it — because the instability is in
+    the sign test, not in the threshold. Say so if that is what you find. If instead the
+    gate is stable, say that too, and note it becomes the one genuinely load-bearing piece
+    of the layer.
+
+Task D does not depend on Tasks A–C's conclusions and can run in the same process.
+
+**Deliverable.** `backtests/exit_decision_analysis_2026-08-19.md` with results 1–13, the
+parquet, and a plain-English reading of what they mean. State whether pre-committed
+condition (a) — negative mean `ret_full` given SELL — holds, evaluating it **separately**
+for the 12 Zhang-gated sells and the Andrade-override sells, since 1D showed those are
+different populations. Report Task D's stability verdict as its own headline, independent
+of (a).
+
+Do not issue a KEEP/SHELVE verdict — conditions (b) and (c) are still untested and belong
+to Prompts 4 and 3. Do not use the word "pass".
 
 Print your findings; do not commit.
 
@@ -343,45 +452,131 @@ Print your findings; do not commit.
 
 # PROMPT 5 — Consolidated verdict and commit commands
 
-Prerequisite: Prompts 1-4 complete (or Prompt 1 failed, in which case write up the failure
-and stop after step 1).
+## ⚠️ AMENDED 2026-08-19 — Prompts 3 and 4 are SKIPPED. Read this instead of the body below.
 
-**Task.** Write `backtests/exit_layer_verdict_2026-07-30.md`, ≤ 2 pages, structured as:
+**The verdict is already determined.** Prompt 2 measured pre-committed condition (a):
+mean `ret_full` given SELL = **+0.1617** (positive), hit rate **9/29 = 31.0%**. The rule
+states that (a) failing is *sufficient* for SHELVE, independent of (b) and (c).
 
-1. **Verdict** — KEEP / SHELVE / INCONCLUSIVE, applying the pre-committed decision rule at
-   the top of this file verbatim. State which condition (a)/(b)/(c) passed or failed and
-   with what number. Do not soften and do not add new criteria after the fact.
-2. **Attribution** — the Prompt 3 table: how much of −0.5089 was cash drag, how much was
-   Andrade, how much was the regime mis-wiring.
-3. **What is now known about Zhang** — the Case census. If Zhang is structurally Case I
-   throughout, record that the Zhang integration is *unidentified at this horizon and asset
-   class*, distinct from *wrong*. The 50/50 unit tests validate the formula; they say
-   nothing about the integration. Future work should not re-litigate the math.
-4. **The re-entry / buy-back question** — closed, with the Prompt 2C numbers, including the
-   perfect-foresight ceiling. Record why it is closed so it does not get reopened from
-   intuition later.
-5. **Known-bad harness findings** — anything Prompt 1 turned up. If the reconciliation
-   required fixing something in `backtest_exit_layer.py`, that fix matters beyond this
-   layer and should be called out for the production harness too.
-6. **Open, untested** — bear-regime behaviour. Note the metric that a future bear test must
-   use (max drawdown reduction and Calmar, pre-registered before the run), and note that
-   the in-sample-entry contamination biases such a test *against* the layer, making it
-   conservative rather than invalid.
-7. **Recommendation to Aman** in three sentences.
+Prompts 3 and 4 test (c) and (b), which only matter if (a) passes. Running them now would
+be searching for grounds to reopen a settled question — the exact failure mode the
+pre-commitment exists to prevent. **Do not run them.** Two cheap pieces from them are
+folded into Task A below because the record deserves them, not because they can change
+the outcome.
 
-Then update `memory/hold_sell_layer_design.md` (repo file) with a dated section recording
-the outcome, so the next session does not restart from the design doc's optimistic framing.
+Prerequisites, all met: Prompt 1 RECONCILED; Prompt 1C froze the vintage and its
+Andrade-off check failed, overturning the "Zhang never triggers" premise; Prompt 1D
+resolved units to FORK 2; Prompt 2 failed condition (a).
+
+Guard first (four checks). Run everything with `--vintage backtests/vintage_2026-08-04`.
+Numeric-provenance rule applies: every figure cites its source file, nothing from memory,
+`[carried]` on anything quoted rather than recomputed.
+
+### Task A — the two folded-in measurements (run before writing)
+
+1. **Redistribute-to-survivors variant.** Currently exited weight sits in cash at 1/n
+   (`exp_m = np.sum(exp_rets)/n`). Add a path that renormalises the surviving book to
+   equal weight so the portfolio stays fully invested. Report its Sharpe. The difference
+   `experimental_redist − experimental` is **mechanical cash drag**, attributable to
+   plumbing rather than to Andrade. The writeup must not charge plumbing to the signal.
+2. **Left-tail metrics** for baseline, experimental, experimental_redist, hard_stop, and
+   Zhang-only: max drawdown, Sortino, Calmar, worst single month, 5th-percentile monthly
+   return. An exit layer's stated purpose is left-tail management; the record should show
+   what it actually did to the left tail, even in failure. Report even if it worsens
+   every one — especially then.
+
+**Do NOT** tune Andrade's confidence threshold, retune the regime detector, or search over
+any parameter on this window. Any such search is in-sample on the same 17 months the
+effect was measured on and produces a number that is not evidence. Note in the writeup
+that you were instructed not to.
+
+### Task B — write `backtests/exit_layer_verdict_2026-08-19.md` (≤ 3 pages)
+
+1. **Verdict — SHELVE.** Apply the pre-committed rule verbatim. State that (a) failed at
+   +0.1617 mean / 31.0% hit rate, and that (b) and (c) were deliberately not tested
+   because (a) failing is sufficient. Do not soften, do not add criteria after the fact,
+   and do not use the word "pass" anywhere except when quoting the rule.
+2. **The decomposition, with significance.** Zhang-gated sells: n=12, 58.3% hit, mean
+   +0.0041 — break-even, and at n=12 the binomial p ≈ 0.39, i.e. no signal either way.
+   Andrade-driven: n=17, **2 correct out of 17**, mean +0.2730. Under a coin-flip null
+   that is p ≈ 0.0012 — Andrade's exit signal is not merely weak, it is **significantly
+   anti-predictive**. Pooled 9/29 gives p ≈ 0.031. Recompute all three p-values yourself
+   rather than carrying these; report your figures and flag any disagreement.
+3. **Concentration caveat — state it prominently, do not bury it.** Five false positives
+   (INTC, AMD, ON, ANET, AVGO) all fall in 2026-03-31 and account for roughly 63% of the
+   total gain forgone. The *direction* of the failure is robust (31% over 29 decisions,
+   Andrade at p ≈ 0.001). The *magnitude* rests heavily on one month of semiconductors
+   rallying into a STRONG_SELL. Both facts belong in the record; a reader who sees only
+   the aggregate would overstate the effect size.
+4. **Attribution.** Cash drag (Task A.1) vs Andrade signal error vs the regime
+   mis-wiring already corrected (−0.5089 → −0.3049, a ~0.20 Sharpe artifact of the
+   lookahead). Numbers must sum; assert the sum programmatically, do not eyeball it.
+5. **What is now known about Zhang.** Units are correct (`[x*] = [K]`, FORK 2). The price
+   test never binds — 45/45, minimum margin 33.7×, and needing `K_fraction` ≈ 42% at the
+   median to bind. Zhang's own AAPL example is degenerate the same way ($0.0172 against a
+   $542.10 sell), so the rule was inert *as published* for equities; the port is faithful.
+   Case II is 0/225 and unreachable (`f1` min 2.592 vs ρ = 0.03) independent of K, so the
+   daily hard-stop is structurally dead and REV 4's fix A was never testable here. Record
+   that the 50/50 unit tests validate the algebra and say nothing about the integration —
+   future work must not re-litigate the math.
+6. **Φ stability.** Φ sign flips in ~22% of bootstrap draws and 91.6% of calibrations sit
+   within 1% of the flip, but decisions flip only ~6.7% because 167/225 rows are state 1
+   where Zhang cannot sell regardless — the state constraint firewalls the instability.
+   Note this explicitly as a correction to the earlier "the gate is a coin flip" framing.
+   Then the finding that matters: across 500 perturbed worlds, experimental Sharpe spans
+   1.1941–1.3666 and **every single world is below baseline** (max 1.4057 < 1.5871). The
+   drag is identified above sampling noise; there is no parameter draw where this wins.
+7. **The re-entry / buy-back question — CLOSED, with arithmetic.** The exit layer is
+   stateless month-over-month (`exit_manager.py:266-368`); all 16 next-month absences are
+   the ensemble dropping the ticker, not the layer excluding it. Perfect-foresight
+   re-entry at each month's low gives 1.8108 vs baseline 1.5871. Getting from the layer's
+   1.2822 back to merely *matching* baseline needs +0.3049 of the +0.5286 that perfect
+   foresight buys — so any re-entry gate must capture **~58% of physically impossible
+   timing just to break even with doing nothing.** Record this so the idea is not
+   reopened from intuition later.
+8. **Harness findings that outlive this layer.** The as-of regime lookahead
+   (`get_live_regime_signal()` inside a backtest loop, against its own docstring) — check
+   whether that pattern exists anywhere else in the codebase and say so. And the vintage
+   problem: Sprint 7's 1.016 no longer reproduces, giving 1.0909, because the nightly
+   news backfill retroactively revises historical inputs. That generalises to every
+   backtest number in the project. State the two open questions plainly: is the revision
+   path prices, or news → sentiment → scores; and does feature construction filter
+   articles by `published_at` relative to each decision date? If it does not, there is
+   lookahead in the **entry** model, which matters far more than anything here.
+9. **Open and untested.** Bear-regime behaviour. Pre-register max-drawdown reduction and
+   Calmar as the metrics before any such run. Note that in-sample entry contamination
+   biases a 2022 test *against* the layer, making it conservative rather than invalid.
+10. **Recommendation** in three sentences.
+
+### Task C — update the repo's own memory
+
+Update `memory/hold_sell_layer_design.md` (the repo file) with a dated section recording
+the SHELVE outcome, so a future session does not restart from the design doc's optimistic
+framing. Also update `memory/future_ideas.md` to move the Markov exit layer from "parked
+stretch goal" to "attempted, shelved 2026-08-19, see verdict" with a pointer to the
+verdict report. A parked idea and a tested-and-rejected idea are different things and the
+queue should not confuse them.
+
+Note in that entry that the queued parameter-recovery / identifiability stretch goal is
+now **partly answered and no longer worth running as specified**: Prompt 2 measured 127
+realised regime transitions per calibration (median) and relative SEs of 8.5–13.2%, so
+identifiability is better than feared and was never the binding constraint. The binding
+constraint was that Andrade's signal is anti-predictive. Say that plainly so nobody
+spends a week on the simulation to rediscover it.
 
 **Commit — Aman runs these himself. Print them; do not execute any git command.**
 
 ```
 cd "$(git rev-parse --show-toplevel)"
 git status
-git add scripts/backtest_exit_layer.py backtests/ memory/hold_sell_layer_design.md
+git add scripts/backtest_exit_layer.py backtests/ memory/hold_sell_layer_design.md memory/future_ideas.md MarkovExit_Diagnostics_Prompts_2026-07-30.md
 git status
-git commit -m "Markov exit layer: diagnostic batch 2026-07-30 — reconciliation, decision replay, variant attribution, significance"
+git commit -m "Markov exit layer: SHELVE. Condition (a) fails (mean ret_full given SELL +0.1617, hit rate 31%); Andrade anti-predictive at p~0.001; re-entry gate closed (needs 58% of perfect foresight to break even)"
 git log --oneline -3
 ```
+
+Check `git status` output before committing — `backtests/vintage_2026-08-04/` is 610 MB
+and must NOT be staged. If it appears, stop and tell Aman; it needs a `.gitignore` entry.
 
 Push only if Aman decides to:
 
@@ -477,3 +672,113 @@ drawdown by ≥3pp. None of the three has been tested. Prompt 2 tests (a), Promp
 
 `backtests/exit_layer_vintage_and_andrade_off_2026-08-04.md` covering Tasks A, B and C,
 plus the manifest and the amended Prompt 1 report. Print findings; do not commit.
+
+---
+
+# PROMPT 1D — Zhang units resolution + attribution redo
+(Added 2026-08-04 after Prompt 1C Task B FAILED. Run BEFORE Prompt 2.)
+
+## STANDING GUARDS (all prompts from here)
+
+- Path/branch/md5 guard as before. `_assert_interpreter()` must pass — `.venv`,
+  numpy 2.4.4 / sklearn 1.8.0 / pandas 2.3.3. Never anaconda base.
+- Run everything against the frozen snapshot: `--vintage backtests/vintage_2026-08-04`.
+- **NEW — numeric provenance rule.** Every number in the deliverable cites the file (and
+  line, where applicable) it was read from. Never transcribe a figure from memory. If a
+  value is quoted from an earlier report rather than recomputed this session, label it
+  `[carried]`. Two prior prompts each shipped a numbers-provenance defect (a mislabelled
+  residual, then fabricated sha256s in a first draft); both were self-caught, but the
+  mitigation is now a rule, not vigilance.
+- Papers live in `research_papers/quant_modeling/` (`When to Sell Markov Chain Asset.pdf`,
+  `Stock Market Index Trading Algorithm.pdf`). If absent, STOP and tell Aman.
+
+## WHAT PROMPT 1C ESTABLISHED (do not re-derive)
+
+- Zhang-only = 1.591542820613977 vs baseline 1.587144507439707; diff +0.0044. **Treat as
+  noise** — Lo SE on a Sharpe of 1.59 at T=17 is ≈±0.88, and there are only 12 sells.
+  The correct reading is "Zhang-only ≈ baseline", nothing stronger.
+- `Zhang SELL ⟺ Case I ∧ state 2`, verified exactly (12 = 12 = 12 in every config).
+- Case I 45/225 (20%), **Case II 0/225**, never-sell 180/225 (80%).
+- x*/p0 over the 45 Case I: median 0.0024, max 0.030. `p0 ≥ x*` in **45/45**.
+- Therefore: the price test never binds; Zhang reduces to a Case-I-gated passthrough of
+  the Andrade DHMM state; there is no Andrade-independent decision surface.
+
+## TASK A — resolve the units of x* (HIGHEST PRIORITY; everything else waits on it)
+
+Hypothesis to test: **the harness compares a raw dollar price against a threshold that
+is not denominated in dollars.** If true, "always breached" is a dimensional artifact,
+not an economic result, and the Zhang leg has never actually been tested.
+
+Evidence motivating this, from the paper's own worked examples:
+
+- Example 2 (p.19): `(x*, x*_0) = (0.012478, 0.033333)` with `X0 = 0.013326`. X0 sits
+  *between* the two thresholds — a sensible configuration only if X is a quantity of
+  order 0.01.
+- Table 1 (p.22), AAPL 2H-2012: `x* = 0.017213`. AAPL traded around $600 pre-split in
+  that period. `K = 0.01`. Neither figure is plausible as US dollars at that price level.
+- The fitted rates in that row (`λ1 = 135.25`, `λ2 = 130.95`, per year) imply a mean
+  regime duration of roughly 2.7 days, and `f1 = 4.89` implies ~489% annualised drift in
+  the uptick state. Confirm the time units of f and λ while you are in there.
+
+Your task:
+
+1. Read the paper and state precisely **what the process X is**: raw price, normalised
+   price (P/P₀), log-price, discounted price, or something else. Quote the defining
+   equation and its page.
+2. State the **units of K** in the paper's formulation, and whether K is absolute or
+   proportional to the price scale.
+3. Determine whether `p0 ≥ x*` as implemented in `src/exit/zhang_optimal.py` /
+   `exit_manager.py` compares like with like. Show the dimensional argument explicitly.
+4. Report the **time units** of `f1`, `f2`, `λ1`, `λ2`, `ρ` in the paper, and confirm the
+   harness's `dt = 1/252` calibration produces parameters in those same units.
+
+**Then fork, and say which fork you are in:**
+
+- **FORK 1 — units are wrong.** Fix the comparison so both sides share a numeraire.
+  Re-run all paths. Report: new Zhang trigger count, new Case I/II split, new x*/p0
+  distribution, how many of the 45 Case I calibrations now have a *binding* price test,
+  and the new Sharpe for baseline / experimental / Zhang-only / hard-stop. Note
+  explicitly whether Case II ever appears once units are corrected — if it does, the
+  daily hard-stop stops being structurally inert and REV 4's fix A becomes testable for
+  the first time.
+- **FORK 2 — units are right.** Then with a realistic transaction cost (K = 0.1% of
+  price) x* is structurally ~0.2% of price and cannot bind for this asset class. State
+  that as a finding, show the algebra for what K would have to be for x* to bind at
+  realistic prices, and say whether that K is economically defensible. If it is not, the
+  recommendation is to remove the Zhang leg entirely rather than tune it.
+
+Do not proceed to Task B until Task A's fork is settled and, if FORK 1, the fix is in.
+
+## TASK B — attribution redo with honest trigger semantics
+
+The current taxonomy credits Zhang for sells where its price test did no work. Replace it
+with a **pivotality** test: a condition counts as a trigger only if flipping it changes
+the decision.
+
+5. For every (ticker, month) decision, record: `price_test_pivotal` (would the decision
+   change if the price condition were forced True? forced False?), `state_test_pivotal`
+   (same for the Andrade state), and `case_gate_pivotal` (same for Case I membership).
+6. Rebuild the trigger table on those three flags rather than on the old
+   zhang/andrade/both labels. Report counts per month.
+7. Report the distribution of the **fitted** parameters across all 225 calibrations —
+   `f1`, `f2`, `λ1`, `λ2`, and implied mean regime duration `1/λ`. This is nearly free
+   while you are in there and it feeds a queued follow-on: if fitted regimes are ~3 days
+   (as the paper's AAPL row implies) then 250 daily closes contain ~135 transitions and
+   parameter identifiability is far better than if regimes are monthly (~8 transitions).
+   Do not analyse this further here — just report the distributions.
+
+## TASK C — stale verdict block
+
+8. `backtest_exit_layer.py` still prints the old rule-2/rule-3 verdict block. First
+   **verify it is print-only** and cannot affect any computed value. If confirmed
+   print-only, replace it with this batch's three-part rule and state in the report that
+   run artefacts are unaffected because the block has no data path. If it is *not*
+   print-only, do not touch it — report what it feeds.
+
+## Deliverable
+
+`backtests/exit_layer_units_and_attribution_2026-08-04.md`. Every number carries its
+source per the provenance rule. Print findings; do not commit.
+
+**No verdict on the layer in this prompt.** This batch's three-part rule is still
+untested; Prompt 2 tests condition (a). Do not use the word "pass".
