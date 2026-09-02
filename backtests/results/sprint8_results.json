@@ -49,5 +49,107 @@
     "Dress-rehearsal orders were queued rather than filled because 2026-07-12 was a Sunday; fill verification against ±0.5% must be checked at the next market open.",
     "Regime gate live path scales weights up to 1.2× under RISK_ON — relies on Alpaca paper's 2-4× buying_power; paper_runner asserts buying_power ≥ gross before submission.",
     "CPI staleness limit amended from 45→75 days pre-rehearsal (Prompt 4 FIX 2) to match BLS release cadence; recorded here so future audits see the calibration."
+  ],
+  "live_gaps": [
+    {
+      "gap_id": "2026-07_2026-08",
+      "months_missed": [
+        "2026-07",
+        "2026-08"
+      ],
+      "scheduled_runs_missed": [
+        {
+          "date": "2026-08-03",
+          "status": "never ran"
+        },
+        {
+          "date": "2026-09-01",
+          "status": "ran late — this restart"
+        }
+      ],
+      "cause": "No code failure and no error: the monthly runbook was simply never invoked. Attention went to the Markov diagnostics (2026-07-30 → 2026-08-19, layer shelved) and the news-backfill fix (2026-08-11). The 2026-07-13 run was the last live invocation.",
+      "cause_amendment_2026-09-01": "The 'no code failure' characterisation is incomplete. A latent bug in feature_matrix._load_fundamental_scores() built its monthly forward-fill scaffold ending at the last QUARTER-end rather than the requested month-end, so months after the last completed quarter came back with 13/20 factor columns NaN (65% > the 50% NAN_DROP_THRESHOLD) and were dropped entirely. The feature matrix could therefore only ever reach the last completed quarter. Sprint 8 did not surface this because 2026-06-30 IS a quarter-end. Had the 2026-08-03 rebalance been invoked on schedule it would have scored 2026-06 and silently rebalanced into a stale month. Fixed 2026-09-01 by extending the scaffold to max(last_quarter_end, requested_end); the change is purely additive (+106 rows = 2 months x 53 tickers, no historical row altered) and restores the behaviour the function's docstring already specified. No model, FEATURE_COLS, MIN_SCORE, TOP_N or pickle change.",
+      "book_held_unmanaged": [
+        "ACLS",
+        "FORM",
+        "HPE",
+        "MRVL",
+        "ON",
+        "QCOM"
+      ],
+      "measured_over_gap": {
+        "method": "Reconstruction from Stooq EOD closes in the prices table, holding the actual filled quantities from the 2026-07-13 fills with cash at -19,999.95. Not a broker read.",
+        "window": "2026-07-13 → 2026-08-31",
+        "sessions": 36,
+        "book_return_pct": -8.38,
+        "max_drawdown_pct": -22.99,
+        "day1_equity": 97089.65,
+        "end_equity": 88958.29,
+        "end_equity_cross_check": "88,958.29 equals Alpaca's reported last_equity (88,958.29) to the cent, so the reconstruction and the broker agree exactly at 2026-08-31.",
+        "spy_return_pct": null,
+        "spy_note": "The +1.94% SPY figure carried in the restart notes could NOT be verified: SPY is not in the prices table (the universe is 54 tech names). It must not be cited as reconstructed until sourced.",
+        "superseded_figure": {
+          "value_pct": -11.01,
+          "why_superseded": "-11.01% spliced a 2026-09-01 BROKER equity read (86,454.17) onto the 2026-07-13 Stooq day-1 (97,156), spanning 37 marks, while the -22.97% drawdown and 36-session count beside it came from the 36-session 2026-08-31 window. It was therefore not 'reconstruction, not a broker read' as labelled. Like-for-like over the stated 36 sessions is -8.38%."
+        },
+        "broker_marked_alternative": {
+          "window": "2026-07-13 → 2026-09-01",
+          "book_return_pct": -10.95,
+          "note": "Marked to the broker's 2026-09-01 close. The extra -2.82% is the 2026-09-01 session alone, which falls outside the 36-session window."
+        }
+      },
+      "broker_state_at_restart": {
+        "as_of": "2026-09-01T23:28 ET",
+        "endpoint": "https://paper-api.alpaca.markets",
+        "equity": 86454.17,
+        "cash": -19999.95,
+        "long_market_value": 106454.12,
+        "gross_over_equity": 1.231,
+        "open_orders": 0,
+        "corporate_actions": "None. 6 orders ever placed on the account, all filled 2026-07-13; current qty equals recorded filled_qty to the last decimal for all six names. Activities since 2026-07-01 are 27 FILLs, one $0.01 CAT fee and the $100k opening journal — no splits, symbol changes or dividends.",
+        "cash_reconciliation": "100,000.00 - 119,999.94 fills - 0.01 fee = -19,999.95, unchanged since 2026-07-13, independently confirming nothing traded during the gap.",
+        "positions": [
+          {
+            "ticker": "ACLS",
+            "qty": 141.412884,
+            "market_value": 15555.42,
+            "unrealized_pl": -4444.42
+          },
+          {
+            "ticker": "FORM",
+            "qty": 178.02948,
+            "market_value": 16991.35,
+            "unrealized_pl": -3008.64
+          },
+          {
+            "ticker": "HPE",
+            "qty": 415.136003,
+            "market_value": 22076.93,
+            "unrealized_pl": 2078.08
+          },
+          {
+            "ticker": "MRVL",
+            "qty": 88.622928,
+            "market_value": 18321.9,
+            "unrealized_pl": -1678.09
+          },
+          {
+            "ticker": "ON",
+            "qty": 215.493912,
+            "market_value": 15657.79,
+            "unrealized_pl": -4342.2
+          },
+          {
+            "ticker": "QCOM",
+            "qty": 107.502143,
+            "market_value": 17850.73,
+            "unrealized_pl": -2149.26
+          }
+        ]
+      },
+      "decision": "Resumed on the 2026-08-31 book rather than waiting for 2026-09-30, accepting a documented two-month hole. Taken before the restart and not revisited on the basis of the drawdown: 36 sessions is far below the power needed to separate skill from noise, and the book was unmanaged over the gap, so part of the loss is the missing rebalance rather than the strategy.",
+      "disclosure_requirement": "MANDATORY: any future performance claim on this book must cite this gap. The book is NOT a continuous track record — it was held unmanaged and unrebalanced from 2026-07-13 to 2026-09-01, across two missed monthly rebalances — and must never be presented as one. Any return series spanning 2026-07 or 2026-08 must carry this gap disclosure alongside it, and must state whether it is reconstructed from EOD marks or read from the broker, because the two differ materially over this window.",
+      "reproducibility_note": "Re-scoring 2026-06-30 with the frozen model on the 2026-09-01 feature matrix yields 3 names above MIN_SCORE, whereas the 2026-07-12 run selected 6. The feature matrix recomputes cross-sectional z-scores over the full panel, so prior months are not bit-reproducible after a refresh. The 2026-06 book as traded is preserved in logs/live_runs/, not regenerable from current data."
+    }
   ]
 }

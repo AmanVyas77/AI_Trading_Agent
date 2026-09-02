@@ -112,12 +112,18 @@ def _load_quant_scores() -> pd.DataFrame:
 
 # ── 2. Load & forward-fill fundamental scores ────────────────────────────────
 
-def _load_fundamental_scores() -> pd.DataFrame:
+def _load_fundamental_scores(end: Optional[str] = None) -> pd.DataFrame:
     """
     Load quarterly fundamental factor scores and forward-fill to monthly.
 
     Each quarter-end value propagates forward until the next quarter-end
     value appears for that ticker.
+
+    `end` extends the monthly scaffold past the last quarter-end so the
+    intra-quarter months of the current quarter are carried forward too.
+    Without it the scaffold stops at the last quarter-end and those months
+    come back all-NaN, then get dropped by the NaN threshold in
+    build_feature_matrix().
     """
     path = PROCESSED / "fundamental_factor_scores.parquet"
     if not path.exists():
@@ -133,9 +139,12 @@ def _load_fundamental_scores() -> pd.DataFrame:
     )
 
     # Build a monthly date scaffold covering the full range
+    scaffold_end = df["quarter_end"].max()
+    if end is not None:
+        scaffold_end = max(scaffold_end, pd.Timestamp(end))
     all_months = pd.date_range(
         start=df["quarter_end"].min(),
-        end=df["quarter_end"].max(),
+        end=scaffold_end,
         freq="ME",
     )
     all_tickers = sorted(df["ticker"].unique())
@@ -285,7 +294,7 @@ def build_feature_matrix(
 
     # ── Load components ───────────────────────────────────────────────
     quant = _load_quant_scores()
-    fund = _load_fundamental_scores()
+    fund = _load_fundamental_scores(end)
     macro = _load_macro(engine)
 
     # ── Merge ─────────────────────────────────────────────────────────
