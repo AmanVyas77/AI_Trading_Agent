@@ -27,6 +27,16 @@ data/quant_research.db
 *.feather
 *.h5
 
+# ── Frozen data vintages ─────────────────────────────────────
+# backtests/vintage_*/ holds byte-for-byte snapshots used to make diagnostic
+# runs reproducible while the nightly news backfill keeps revising history.
+# The .db is ~640 MB — well over GitHub's 100 MB limit. Ignore the payload,
+# but ALWAYS commit MANIFEST.json: it carries the per-file sha256s, so a
+# restored snapshot can be verified against the run that used it.
+backtests/vintage_*/*.db
+backtests/vintage_*/*.sqlite
+backtests/vintage_*/*.sqlite3
+
 # ── Notebooks checkpoints ────────────────────────────────────
 .ipynb_checkpoints/
 

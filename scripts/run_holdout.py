@@ -83,6 +83,15 @@ def main() -> None:
 
     from src.live.scorer import score_months
     from src.strategies.ensemble.portfolio_builder import build_portfolio_weights
+    from src.utils.data_vintage import format_vintage, price_vintage
+
+    # ── 0. Pin the price vintage ───────────────────────────────────────
+    # The prices table is retroactively rewritten by the AV backfill, so this
+    # result is only comparable against another run on the same fingerprint.
+    # Re-running this script unchanged after a backfill moves the holdout
+    # Sharpe (1.0160 → 1.0909 as of 2026-08-03). See src/utils/data_vintage.py.
+    vintage = price_vintage(DB_PATH, HOLDOUT_START, HOLDOUT_END)
+    logger.info("AUDIT: %s", format_vintage(vintage))
 
     # ── 1. Score months with the frozen model ──────────────────────────
     logger.info("Scoring holdout window %s → %s", HOLDOUT_START, HOLDOUT_END)
@@ -168,6 +177,8 @@ def main() -> None:
     )
     print(f"  Monthly breadth ≥0.52: min={breadth.min()}  "
           f"median={int(breadth.median())}  max={breadth.max()}")
+    print(f"  {format_vintage(vintage)}")
+    print(f"  price_vintage sha256: {vintage['sha256']}")
     print(f"  Equity rows:     {len(equity_df)}")
     print(f"  Equity dates:    {equity_df.index.min().date()} → "
           f"{equity_df.index.max().date()}")

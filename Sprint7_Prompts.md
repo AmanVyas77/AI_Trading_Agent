@@ -153,26 +153,35 @@ CRITICAL RULE: never edit config/settings.yaml or .env.
    Report before/after max dates per series.
 
 2. FinBERT 8-K backlog (the long pole — budget accordingly):
-   Run the collection pipeline for the missing window per Prompt 1's
-   plan, then the scoring pipeline. Process incrementally (only
-   unscored rows). On this 8 GB machine: keep FinBERT batch sizes
-   small, run tickers in chunks, and checkpoint (the pipeline upserts —
-   re-running after an interruption must be safe; verify it is before
-   relying on it). If total runtime is projected over ~2 hours, do the
-   2025-01→2026-07 window in two chunks and report progress after each.
+   AUTHORIZED CODE EDIT (Prompt 1 finding): sentiment_pipeline.py
+   hardcodes DATE_START="2015-01-01"/DATE_END="2024-12-31" as module
+   constants (~lines 71-72) and run_sentiment_pipeline() takes no date
+   args. The pipeline is NON-incremental (re-downloads + re-scores every
+   filing in window — ~7h wasted if run with the old start). Make ONE
+   minimal edit: parameterize run_sentiment_pipeline(date_start=None,
+   date_end=None) defaulting to the module constants, thread the params
+   into _collect_filings' date filter, and add --date-start/--date-end
+   CLI args. No other behavior changes; document the diff.
+   Then run the backlog: --date-start 2025-01-01 --date-end <today>.
+   ~750 filings ≈ 1.5-2h CPU per Prompt 1's estimate. Keep FinBERT
+   batches small (8 GB machine), run in chunks, verify the
+   INSERT OR REPLACE upsert makes interruption+rerun safe before
+   relying on it. If projected over ~2 hours, split the window into two
+   chunks and report progress after each.
    After scoring: report sentiment_scores max filing_date, rows added,
-   and per-year coverage counts (2025, 2026) vs 2024 as a sanity ratio.
+   and per-year coverage counts (2025, 2026) vs 2024 (~536) as a sanity
+   ratio.
 
 3. LM 10-K refresh (should be near-current already — 2026-06-05):
    run its pipeline only if Prompt 1 found missing filings; otherwise
    just confirm freshness.
 
-4. XLK cache: data/raw/xlk_monthly.csv currently ends ~2025-01. The
-   holdout backtest benchmarks against SPY (downloaded on the fly) and
-   labels are NOT needed for holdout scoring, so XLK is NOT a blocker —
-   but refresh the cache anyway for future use: delete the cache file
-   and let target_builder._load_xlk_monthly re-download on next use, OR
-   extend it manually via yfinance to today. Verify the new range.
+4. XLK: SKIP (revised after Prompt 1). Labels are not needed for the
+   holdout, and target_builder._load_xlk_monthly hardcodes the literal
+   download end "2025-01-15" (~line 126) — deleting the cache would
+   just re-fetch the same stale range. Do NOT patch target_builder in
+   this sprint; the XLK/label refresh belongs to the first future
+   sprint that retrains or relabels (noted for Sprint 8/9).
 
 5. Final freshness table (same format as Prompt 1) proving all feeds
    are current. Also run: git status --short — confirm NOTHING tracked
@@ -197,6 +206,21 @@ first (inner repo). Use .venv/bin/python.
 CRITICAL RULES: never edit config/settings.yaml or .env. Do NOT run or
 modify model_trainer.py — the model stays frozen. Do NOT touch the
 tracked Sprint 5/6 result files.
+
+PART A0 — CPI backfill (Prompt 2 finding; do FIRST):
+CPIAUCSL is not in settings.yaml's FRED list, so macro_series 'cpi' is
+frozen at 2026-03-01 and feature_matrix would ffill March's value onto
+the Apr-Jun 2026 holdout rows. cpi is one of the frozen model's 23
+features — this is a data-completeness fix, allowed pre-verdict.
+Write a ONE-OFF script (scripts/backfill_cpi.py, keep it — Sprint 8 can
+reuse): fetch CPIAUCSL from 2026-01-01 → today via fredapi (FRED_API_KEY
+already in .env — read it, never edit .env), upsert into macro_series
+with series_name='cpi' (the DB uses friendly names — verify against an
+existing cpi row's exact schema first). Verify: cpi max date advances to
+~2026-05/06 (CPI publishes ~1 month lagged — that residual lag is normal
+and matches how the model was trained). Do NOT touch settings.yaml.
+FALLBACK if FRED fetch fails: skip, and ensure Prompt 4 records the
+caveat "cpi ffilled from 2026-03 for Apr-Jun holdout rows".
 
 PART A — Rebuild factors + feature matrix through the holdout end:
 1. .venv/bin/python -m src.strategies.ensemble.factor_export_quant \
@@ -225,8 +249,15 @@ paper-trading in Sprint 8):
   Logic: load the pickle, take the LAST fold's model + feature_names
   (this is the production model — trained through 2024-07-31); load
   ensemble_feature_matrix.parquet; select rows in [start, end]; build X
-  with EXACTLY the pickle's feature_names order; fillna(0.0) (mirror
-  model_trainer._prepare_xy); predict_proba[:,1] → ensemble_score;
+  via X = df.reindex(columns=pickle_feature_names) — NOT by passing the
+  matrix's own columns. ⚠️ fcf_yield landmine (Prompt 1 finding): the
+  rebuilt matrix has 24 feature columns but the frozen model knows 23
+  (fcf_yield was all-NaN at Sprint 5 training and got dropped at save
+  time; the rebuild may now populate it). reindex drops extras and
+  NaN-fills any missing column; then fillna(0.0) (mirror
+  model_trainer._prepare_xy). Assert X.shape[1] == 23 and the column
+  order equals the pickle's list exactly before predicting.
+  predict_proba[:,1] → ensemble_score;
   return/save [date, ticker, ensemble_score] to
   data/processed/holdout_scores.parquet. Log the model's
   effective_train_end and n_features at runtime as an audit line.
@@ -289,6 +320,24 @@ re-running with changes. If you find a DATA bug (wrong dates, broken
 join), fix the bug, regenerate, and note it; nothing that changes model
 behavior may be touched.
 
+0. PRE-VERDICT DATA CHECK (added after Prompt 3's dry run — this is a
+   plumbing check, allowed before the verdict):
+   March 2026 scored ALL 53 names at an identical 0.6221. Identical
+   probabilities usually mean identical feature rows (e.g. a month gone
+   all-NaN → fillna(0) → 53 zero vectors). Inspect the 2026-03-31 rows
+   of ensemble_feature_matrix.parquet: are the 23-feature vectors
+   actually distinct across tickers? 
+   - If distinct → the tie is genuine model behavior (leaf saturation);
+     proceed, and note in verdict_notes that Mar-2026 holdings were
+     tie-broken and breadth hit 53.
+   - If identical/all-zero → DATA BUG: trace which columns collapsed,
+     fix the data, regenerate scores/weights/equity via
+     scripts/run_holdout.py, document the fix. Only then proceed.
+   Window note: the equity curve correctly starts 2025-01-31 (first
+   month-end rebalance; scores trade forward) — the pre-committed
+   Sharpe is computed over this curve's daily returns; state the actual
+   start date in the JSON.
+
 1. Re-run scripts/run_holdout.py fresh (deterministic inputs — confirm
    the equity CSV is byte-stable vs Prompt 3's, or explain any diff;
    yfinance SPY re-download may differ trivially, that's acceptable).
@@ -314,7 +363,10 @@ behavior may be touched.
      {pickle: "ensemble_models.pkl", folds: 78, effective_train_end:
      "2024-07-31", scorer: "src/live/scorer.py last-fold model"},
      caveats: ["TimesFM pretraining vintage …", "18-month window —
-     limited statistical power"], verdict: "PASS"|"FAIL",
+     limited statistical power", plus "cpi ffilled from 2026-03 for
+     Apr-Jun rows" IF Prompt 3's CPI backfill was skipped, and any
+     other data-completeness notes from Prompts 2-3],
+     verdict: "PASS"|"FAIL",
      verdict_notes: "3-6 sentences: the number, the rule, what drove
      it (breadth? regime? selection?), and what it does and does not
      prove given the window length." }

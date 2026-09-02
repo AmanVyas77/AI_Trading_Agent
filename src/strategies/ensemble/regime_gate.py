@@ -216,6 +216,91 @@ def get_historical_regime_multipliers(
     return multipliers
 
 
+def get_regime_signal_asof(as_of, max_staleness_days: int = 45) -> dict:
+    """Point-in-time regime reading for ``as_of`` — the backtest-safe analogue
+    of :func:`get_live_regime_signal`.
+
+    Returns the SAME dict shape as :func:`get_live_regime_signal` so it can be
+    dropped into :class:`~src.exit.exit_manager.MonthlyCalibration` unchanged.
+
+    Why this exists
+    ---------------
+    ``get_live_regime_signal()`` reads the *latest* macro snapshot and takes no
+    as-of argument. Calling it inside a backtest loop applies today's macro state
+    to a decision made months in the past — lookahead, and worse, a result that
+    silently changes whenever the macro tables are refreshed. This function reads
+    only macro observations dated on or before ``as_of``.
+
+    Staleness is measured from the most recent *real* observation of each
+    critical series at or before ``as_of`` (forward-fill is deliberately NOT used
+    to mask a gap). A stale critical series forces NEUTRAL, mirroring the live
+    path's behaviour rather than silently trading off an old reading.
+
+    No LLM call is ever made — a historical LLM reading is not reconstructible,
+    so ``llm_signal`` is always ``"SKIPPED"``.
+    """
+    as_of = pd.Timestamp(as_of)
+
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        try:
+            raw = pd.read_sql_query(
+                "SELECT series_name, date, value FROM macro_series "
+                "WHERE series_name IN ('vix','yield_spread_10y2y') "
+                "AND date <= ? ORDER BY date",
+                conn, params=(as_of.strftime("%Y-%m-%d"),),
+            )
+        except Exception as exc:  # table absent → neutral, flagged
+            logger.warning("macro_series unreadable (%s) — NEUTRAL as-of %s",
+                           exc, as_of.date())
+            raw = pd.DataFrame(columns=["series_name", "date", "value"])
+
+    snapshot: dict[str, dict] = {}
+    values: dict[str, Optional[float]] = {}
+    stale_series: list[str] = []
+
+    for name in _CRITICAL_SERIES:
+        sub = raw.loc[raw["series_name"] == name].dropna(subset=["value"])
+        if sub.empty:
+            values[name] = None
+            stale_series.append(name)
+            continue
+        last = sub.iloc[-1]
+        obs_date = pd.Timestamp(last["date"])
+        age = (as_of - obs_date).days
+        snapshot[name] = {"value": float(last["value"]),
+                          "date": obs_date.strftime("%Y-%m-%d")}
+        values[name] = float(last["value"])
+        if age > max_staleness_days:
+            logger.warning("as-of %s: '%s' is %dd old (limit %d)",
+                           as_of.date(), name, age, max_staleness_days)
+            stale_series.append(name)
+
+    rule_signal = _classify_row(values.get("vix"), values.get("yield_spread_10y2y"))
+
+    if stale_series:
+        return {
+            "multiplier": NEUTRAL_MULT,
+            "rule_signal": rule_signal,
+            "llm_signal": "SKIPPED",
+            "reasoning": f"as-of {as_of.date()}: stale/missing macro — NEUTRAL",
+            "macro_snapshot": snapshot,
+            "stale": True,
+            "stale_series": stale_series,
+            "as_of": as_of.strftime("%Y-%m-%d"),
+        }
+
+    return {
+        "multiplier": _LABEL_TO_MULT[rule_signal],
+        "rule_signal": rule_signal,
+        "llm_signal": "SKIPPED",
+        "reasoning": f"as-of {as_of.date()}: rules-only point-in-time signal",
+        "macro_snapshot": snapshot,
+        "stale": False,
+        "stale_series": [],
+        "as_of": as_of.strftime("%Y-%m-%d"),
+    }
+
+
 def _run_llm_regime(prompt: str) -> tuple[str, str]:
     """Ask the configured LLM for a regime label.
 
