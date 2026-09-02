@@ -48,7 +48,8 @@
     "broker_alpaca whole-share fallback engages if the SDK rejects a fractional notional MARKET/DAY order (rare, e.g. non-fractionable tickers); qty rounded down using latest DB adj_close.",
     "Dress-rehearsal orders were queued rather than filled because 2026-07-12 was a Sunday; fill verification against ±0.5% must be checked at the next market open.",
     "Regime gate live path scales weights up to 1.2× under RISK_ON — relies on Alpaca paper's 2-4× buying_power; paper_runner asserts buying_power ≥ gross before submission.",
-    "CPI staleness limit amended from 45→75 days pre-rehearsal (Prompt 4 FIX 2) to match BLS release cadence; recorded here so future audits see the calibration."
+    "CPI staleness limit amended from 45→75 days pre-rehearsal (Prompt 4 FIX 2) to match BLS release cadence; recorded here so future audits see the calibration.",
+    "EXIT DEFECT (live, unfixed as of 2026-09-02): paper_runner cannot fully exit a fractional position - the notional sell is rejected on overshoot (40310000) and the retry truncates with int() while sizing off a stale DB close, both under-selling. The 2026-09-02 rebalance left 4.66pp of equity in five names targeted for complete exit; recovery required manual close_position calls. Re-running --execute strands the remainder permanently rather than converging to flat. See live_gaps[0].exit_defect and ExitFix_Prompt.md. Due before the October rebalance."
   ],
   "live_gaps": [
     {
@@ -149,7 +150,267 @@
       },
       "decision": "Resumed on the 2026-08-31 book rather than waiting for 2026-09-30, accepting a documented two-month hole. Taken before the restart and not revisited on the basis of the drawdown: 36 sessions is far below the power needed to separate skill from noise, and the book was unmanaged over the gap, so part of the loss is the missing rebalance rather than the strategy.",
       "disclosure_requirement": "MANDATORY: any future performance claim on this book must cite this gap. The book is NOT a continuous track record — it was held unmanaged and unrebalanced from 2026-07-13 to 2026-09-01, across two missed monthly rebalances — and must never be presented as one. Any return series spanning 2026-07 or 2026-08 must carry this gap disclosure alongside it, and must state whether it is reconstructed from EOD marks or read from the broker, because the two differ materially over this window.",
-      "reproducibility_note": "Re-scoring 2026-06-30 with the frozen model on the 2026-09-01 feature matrix yields 3 names above MIN_SCORE, whereas the 2026-07-12 run selected 6. The feature matrix recomputes cross-sectional z-scores over the full panel, so prior months are not bit-reproducible after a refresh. The 2026-06 book as traded is preserved in logs/live_runs/, not regenerable from current data."
+      "reproducibility_note": "Re-scoring 2026-06-30 with the frozen model on the 2026-09-01 feature matrix yields 3 names above MIN_SCORE, whereas the 2026-07-12 run selected 6. The feature matrix recomputes cross-sectional z-scores over the full panel, so prior months are not bit-reproducible after a refresh. The 2026-06 book as traded is preserved in logs/live_runs/, not regenerable from current data.",
+      "restart_executed": {
+        "executed_at": "2026-09-02T09:53:41 ET (orders filled 09:53-09:54 ET)",
+        "month": "2026-08",
+        "as_of": "2026-08-31",
+        "book": "AMAT + HPE at 60% each (n_selected=2, per_name_weight=0.6, gross_exposure=1.2)",
+        "scores": {
+          "AMAT": 0.521218,
+          "HPE": 0.521218,
+          "min_score": 0.52,
+          "margin_above_gate": 0.001218,
+          "first_name_excluded": {
+            "ticker": "CRM",
+            "score": 0.518363,
+            "short_by": 0.001637
+          },
+          "note": "AMAT and HPE tie to six decimals. The book was decided by a margin smaller than the gap to the first excluded name; a 2-vs-3 name book here is noise-level, not a strong signal."
+        },
+        "regime": {
+          "multiplier": 1.2,
+          "rule_signal": "RISK_ON",
+          "stale": false,
+          "stale_series": []
+        },
+        "turnover_one_way_pct": 95.9,
+        "equity_marks": {
+          "at_execute_0953": 84368.46,
+          "post_flatten_1000": 84418.09
+        },
+        "final_verified_weights": {
+          "AMAT": 0.6002,
+          "HPE": 0.6009,
+          "verified_against": "post-flatten equity 84,418.09",
+          "note": "Weights drift intraday with prices; a later read the same session showed AMAT 0.6015 / HPE 0.5996. Drift, not a discrepancy."
+        },
+        "entering": [
+          "AMAT"
+        ],
+        "leaving": [
+          "ACLS",
+          "FORM",
+          "MRVL",
+          "ON",
+          "QCOM"
+        ],
+        "retained": [
+          "HPE (25.6% -> 60%, the only prior holding in profit)"
+        ]
+      },
+      "fills": {
+        "submission_events": [
+          {
+            "event": "paper_runner --execute",
+            "at": "2026-09-02T09:53:41 ET",
+            "n_orders": 7,
+            "n_submitted": 7,
+            "order_type": "MARKET / DAY",
+            "record": "logs/live_runs/2026-08_run_20260902T095341.json"
+          },
+          {
+            "event": "close_position (manual flatten of five residuals)",
+            "at": "2026-09-02T13:58:17Z = 09:58 ET",
+            "n_orders": 5,
+            "order_type": "MARKET / DAY, submitted as qty (notional=None)",
+            "record": "NONE - close_position bypasses paper_runner; Alpaca order IDs only"
+          }
+        ],
+        "leg1_paper_runner_execute": [
+          {
+            "ticker": "ACLS",
+            "side": "sell",
+            "submitted": "notional 15326.40",
+            "filled_qty": 132.0,
+            "avg_price": 108.38,
+            "realised_notional": 14306.16,
+            "diff": -1020.24,
+            "diff_pct": -6.657
+          },
+          {
+            "ticker": "FORM",
+            "side": "sell",
+            "submitted": "notional 16740.11",
+            "filled_qty": 166.0,
+            "avg_price": 93.62,
+            "realised_notional": 15540.92,
+            "diff": -1199.19,
+            "diff_pct": -7.164
+          },
+          {
+            "ticker": "MRVL",
+            "side": "sell",
+            "submitted": "notional 18088.83",
+            "filled_qty": 85.0,
+            "avg_price": 204.03,
+            "realised_notional": 17342.55,
+            "diff": -746.28,
+            "diff_pct": -4.126
+          },
+          {
+            "ticker": "ON",
+            "side": "sell",
+            "submitted": "notional 15510.17",
+            "filled_qty": 209.0,
+            "avg_price": 71.9,
+            "realised_notional": 15027.1,
+            "diff": -483.07,
+            "diff_pct": -3.115
+          },
+          {
+            "ticker": "QCOM",
+            "side": "sell",
+            "submitted": "notional 17787.30",
+            "filled_qty": 104.0,
+            "avg_price": 165.405096,
+            "realised_notional": 17202.13,
+            "diff": -585.17,
+            "diff_pct": -3.29
+          },
+          {
+            "ticker": "AMAT",
+            "side": "buy",
+            "submitted": "notional 50621.08",
+            "filled_qty": 116.35957613,
+            "avg_price": 435.04,
+            "realised_notional": 50621.07,
+            "diff": -0.01,
+            "diff_pct": -0.0
+          },
+          {
+            "ticker": "HPE",
+            "side": "buy",
+            "submitted": "notional 29705.07",
+            "filled_qty": 590.088597536,
+            "avg_price": 50.34,
+            "realised_notional": 29705.06,
+            "diff": -0.01,
+            "diff_pct": -0.0
+          }
+        ],
+        "leg2_close_position": [
+          {
+            "ticker": "ACLS",
+            "order_id": "241d048f-91af-49ee-be33-fb8c29c08ee4",
+            "submitted_qty": 9.41288361,
+            "filled_qty": 9.41288361,
+            "avg_price": 108.1,
+            "realised_notional": 1017.53,
+            "status": "filled"
+          },
+          {
+            "ticker": "FORM",
+            "order_id": "22184170-04d8-4508-a28b-c11c2707e82c",
+            "submitted_qty": 12.029480286,
+            "filled_qty": 12.029480286,
+            "avg_price": 93.54,
+            "realised_notional": 1125.24,
+            "status": "filled"
+          },
+          {
+            "ticker": "MRVL",
+            "order_id": "b6367f22-5507-4d7b-9abb-60350f3b97de",
+            "submitted_qty": 3.622927864,
+            "filled_qty": 3.622927864,
+            "avg_price": 204.108959,
+            "realised_notional": 739.47,
+            "status": "filled"
+          },
+          {
+            "ticker": "ON",
+            "order_id": "dc338cb2-235a-4c1e-ba4f-32387acf17f0",
+            "submitted_qty": 6.493912293,
+            "filled_qty": 6.493912293,
+            "avg_price": 71.84076,
+            "realised_notional": 466.53,
+            "status": "filled"
+          },
+          {
+            "ticker": "QCOM",
+            "order_id": "4b57ae53-9cb9-491e-9c47-04181da39830",
+            "submitted_qty": 3.502142933,
+            "filled_qty": 3.502142933,
+            "avg_price": 165.19,
+            "realised_notional": 578.52,
+            "status": "filled"
+          }
+        ],
+        "exit_completeness": "All five names exactly flat after leg 2: residual qty 0.0000000000 for every name.",
+        "slippage": {
+          "buys": "Both notional buys filled to within $0.01 of target (-0.000%). Notional orders reproduce the requested dollar amount essentially exactly.",
+          "sells_vs_order_time_price": "ACLS -0.000%, FORM -0.436%, MRVL -0.039%, ON -0.104%, QCOM -0.033% against the price implied at order time (notional/held_qty).",
+          "two_leg_delay_cost_usd": -4.45,
+          "delay_cost_note": "Cost of selling the five residual stubs at 09:58 rather than 09:53. Immaterial: -$4.45 total across five names."
+        },
+        "totals": {
+          "sell_proceeds_both_legs": 83346.15,
+          "buy_notional": 80326.13
+        }
+      },
+      "fill_criterion_result": {
+        "criterion": "each name within +/-0.5% of target notional",
+        "result": "2 of 7 PASSED on the first pass",
+        "passed": [
+          "AMAT (-0.000%)",
+          "HPE (-0.000%)"
+        ],
+        "failed": [
+          "ACLS (-6.657%)",
+          "FORM (-7.164%)",
+          "MRVL (-4.126%)",
+          "ON (-3.115%)",
+          "QCOM (-3.290%)"
+        ],
+        "residual_vs_zero_target": {
+          "note": "All five sells had target weight 0.0000 - a complete exit. Residual left by leg 1, as percentage points of the 84,368.46 execute-time equity:",
+          "ACLS_pp": 1.209,
+          "FORM_pp": 1.335,
+          "MRVL_pp": 0.876,
+          "ON_pp": 0.553,
+          "QCOM_pp": 0.687,
+          "total_pp": 4.66,
+          "total_usd": 3931.74
+        },
+        "honest_statement": "This must NOT be recorded as a clean pass. The two buys met the criterion; the five sells missed it by 3.1-7.2% of target notional and left 4.66pp of equity in names the strategy had marked for complete exit. Target was reached only after a manual close_position flatten outside paper_runner. Sprint 8's 6/6 fill criterion was met on a buy-only book; this is the first live book with a sell leg and the sell path failed."
+      },
+      "exit_defect": {
+        "summary": "Fractional positions cannot be fully exited by paper_runner. Both the primary and fallback order paths under-sell.",
+        "mechanism_1_notional_rejection": "The primary path submits a notional sell equal to the position's market value at query time. Any adverse move between query and submission makes that notional exceed the live position value, and Alpaca rejects it (code 40310000).",
+        "mechanism_2_retry_truncates_and_uses_stale_price": "broker_alpaca._submit_one falls back to qty = max(1, int(notional / _latest_price(t))). _latest_price reads the most recent adj_close from the prices table, which on 2026-09-02 was the 2026-08-31 close - one session stale and, that day, HIGHER than the live price for all five names. Both errors under-sell: int() truncates the fraction, and the stale-high price buys fewer shares per dollar of notional.",
+        "mechanism_verified": "int(target_notional / 2026-08-31 adj_close) reproduces all five realised fills exactly: ACLS int(15326.40/115.33)=132; FORM int(16740.11/100.61)=166; MRVL int(18088.83/211.66)=85; ON int(15510.17/74.09)=209; QCOM int(17787.30/170.48)=104. Confirmed, not inferred.",
+        "rerunning_execute_would_not_have_fixed_it": {
+          "finding": "Simulated. Re-running --execute does NOT self-heal; it strands the position permanently.",
+          "pass_2": "Stubs are $466.91-$1,126.20, all above the $210.92 do-not-trade band (0.25% x 84,368.46), so orders ARE generated - but int() truncates again.",
+          "pass_3": "Every name then falls below the band and becomes a permanent orphan: ACLS 1.41288361 sh ($153.13), FORM 1.02948029 ($96.38), MRVL 0.62292786 ($127.10), ON 0.49391229 ($35.51), QCOM 0.50214293 ($83.06).",
+          "stranded_total_usd": 495.18,
+          "correction": "An earlier characterisation had the stubs falling below the band on the SECOND pass. Measured, they clear it on pass 2 and strand on pass 3. The conclusion is unchanged and slightly worse: repeated runs converge to a permanently un-exitable remainder rather than to flat."
+        },
+        "recovery_used": "close_position, which submits the exact fractional qty and is not subject to either defect. All five filled in full within 4 seconds.",
+        "status": "LIVE AND UNFIXED as of 2026-09-02.",
+        "fix_owed": "A fix spec is owed as a sibling to BreadthCap_Prompt.md - see ExitFix_Prompt.md. Due before the October rebalance: any month that rotates out of a fractional position hits this, and every live book since 2026-07 has been fractional."
+      },
+      "record_keeping_hazard": {
+        "issue": "Every paper_runner invocation writes the unsuffixed logs/live_runs/2026-08_run.json, including dry runs. The post-execute idempotency dry run overwrote it with mode=dry_run, n_orders=0.",
+        "consequence": "A future reader opening the canonical filename for 2026-08 would conclude the month traded nothing.",
+        "authoritative_record_for_2026-08": "logs/live_runs/2026-08_run_20260902T095341.json (mode=execute, n_orders=7, n_submitted=7).",
+        "caveat": "That record covers the paper_runner leg only. The five close_position liquidations appear in NO run record and exist solely as Alpaca order IDs, reproduced under live_gaps.fills.leg2_close_position."
+      },
+      "manual_intervention": {
+        "action": "Five close_position calls to flatten the residuals left by the failed sell leg.",
+        "at": "2026-09-02T13:58:17Z (09:58 ET)",
+        "order_ids": {
+          "ACLS": "241d048f-91af-49ee-be33-fb8c29c08ee4",
+          "FORM": "22184170-04d8-4508-a28b-c11c2707e82c",
+          "MRVL": "b6367f22-5507-4d7b-9abb-60350f3b97de",
+          "ON": "dc338cb2-235a-4c1e-ba4f-32387acf17f0",
+          "QCOM": "4b57ae53-9cb9-491e-9c47-04181da39830"
+        },
+        "reason": "paper_runner's sell path left 4.66pp of equity in five names whose target weight was 0.0000, and re-running --execute would have stranded them permanently.",
+        "classification": "COMPLETING AN ORDER THE SYSTEM INTENDED, NOT A DISCRETIONARY OVERRIDE.",
+        "justification": "The target weights were computed by the model and persisted in data/live/targets_2026-08.json before any intervention: all five names carry target weight 0.0000. The intervention changed no target, no score, no threshold and no selection. It executed the exit the strategy had already specified and that the order layer failed to complete. Had the intervention altered which names were held or at what weight, it would be a discretionary override and would invalidate the month for track-record purposes. It did not.",
+        "audit_note": "This distinction is load-bearing. Any future reader assessing whether 2026-08 is a clean systematic month should note that discretion entered the execution path but not the decision path."
+      }
     }
   ],
   "breadth_rules": {
