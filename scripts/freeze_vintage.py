@@ -137,7 +137,7 @@ def main() -> None:
         "git_branch": subprocess.check_output(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ROOT, text=True).strip(),
         "git_dirty": bool(subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=ROOT, text=True).strip()),
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT, text=True).strip()),
         "interpreter": interp,
         "window": list(WINDOW),
         "frozen": {},
