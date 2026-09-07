@@ -61,17 +61,14 @@ def _load_prices_range(start: str, end: str) -> pd.DataFrame:
 
 
 def _download_spy(start: str, end: str) -> pd.Series:
-    logger.info("Downloading SPY benchmark via yfinance …")
-    raw = yf.download(
-        "SPY",
-        start=start,
-        end=(pd.Timestamp(end) + pd.Timedelta(days=5)).strftime("%Y-%m-%d"),
-        auto_adjust=True,
-        progress=False,
-    )
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
-    return raw["Close"].rename("SPY")
+    """SPY benchmark, served from the frozen `prices` table (not the network).
+
+    See src/data/quant_pipeline.load_benchmark — falls back to yfinance only
+    with a loud warning, since a fallback breaks reproducibility from a vintage.
+    """
+    from src.data.quant_pipeline import load_benchmark
+
+    return load_benchmark(start, end, ticker="SPY")
 
 
 def main() -> None:

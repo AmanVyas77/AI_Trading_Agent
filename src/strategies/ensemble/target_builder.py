@@ -95,6 +95,12 @@ def _load_monthly_prices(engine) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     pivot = df.pivot(index="date", columns="ticker", values="adj_close")
 
+    # `prices` also holds benchmark series (SPY); _build_labels iterates every
+    # column, so leaving them in would emit benchmark rows into the label set.
+    from src.utils.benchmarks import strip_benchmarks
+
+    pivot = pivot[strip_benchmarks(pivot.columns)]
+
     # Resample daily → month-end (last trading day of each month)
     monthly = pivot.resample("ME").last()
     return monthly

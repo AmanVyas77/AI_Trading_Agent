@@ -208,6 +208,91 @@ def load_prices(
     return pivot
 
 
+# ── Benchmark Data ────────────────────────────────────────────────────────────
+
+BENCHMARK_TICKER = CFG.get("benchmarks", {}).get("phase3", "SPY")
+
+
+def load_benchmark(
+    start: str,
+    end: str,
+    ticker: str = BENCHMARK_TICKER,
+    engine=None,
+    allow_download: bool = True,
+) -> pd.Series:
+    """Load a benchmark adj_close series from the frozen `prices` table.
+
+    The benchmark belongs in the DB for the same reason the candidates do: a
+    pre-registered SPY-relative verdict must be reproducible from a frozen
+    vintage, not from whatever yfinance serves on the day it is re-run. Rows
+    are ingested by `fetch_prices` through the identical code path as the
+    universe, and are covered by `scripts/freeze_vintage.py`.
+
+    Falls back to a live yfinance download only if the DB cannot satisfy the
+    request, and says so loudly — a fallback means the result is no longer
+    reproducible from the vintage.
+
+    Parameters
+    ----------
+    start, end     : inclusive date bounds, YYYY-MM-DD
+    ticker         : benchmark symbol (default from settings.yaml benchmarks.phase3)
+    engine         : SQLAlchemy engine (created if None)
+    allow_download : if False, raise instead of falling back to the network
+
+    Returns
+    -------
+    pd.Series of adj_close indexed by DatetimeIndex, named `ticker`.
+    """
+    if engine is None:
+        engine = get_engine()
+
+    with engine.connect() as conn:
+        df = pd.read_sql_query(
+            text(
+                "SELECT date, adj_close FROM prices "
+                "WHERE ticker = :t AND date >= :start AND date <= :end "
+                "ORDER BY date"
+            ),
+            conn,
+            params={"t": ticker, "start": start, "end": end},
+        )
+
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+        series = df.set_index("date")["adj_close"].rename(ticker)
+        logger.info(
+            f"Benchmark [{ticker}] loaded from DB `prices`: {len(series)} rows "
+            f"[{series.index.min().date()} → {series.index.max().date()}]"
+        )
+        return series
+
+    reason = f"no `{ticker}` rows in `prices` for [{start} → {end}]"
+    if not allow_download:
+        raise RuntimeError(
+            f"Benchmark [{ticker}] unavailable from DB ({reason}) and "
+            "allow_download=False — refusing to fall back to the network."
+        )
+
+    logger.warning(
+        "=" * 72 + "\n"
+        f"FALLBACK: benchmark [{ticker}] NOT served from the DB.\n"
+        f"  reason        : {reason}\n"
+        f"  fallback used : live yfinance download (yf.download)\n"
+        f"  consequence   : this series is NOT part of any frozen vintage and\n"
+        f"                  will not reproduce. Ingest it with\n"
+        f"                  `.venv/bin/python -m src.data.quant_pipeline "
+        f"--tickers {ticker} --price-only`\n" + "=" * 72
+    )
+    raw = yf.download(
+        ticker, start=start, end=end, auto_adjust=True, progress=False, threads=False
+    )
+    if raw.empty:
+        raise RuntimeError(f"Benchmark [{ticker}] fallback download returned no data")
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.get_level_values(0)
+    return raw["Close"].rename(ticker)
+
+
 # ── Macro Data ────────────────────────────────────────────────────────────────
 
 def fetch_macro(

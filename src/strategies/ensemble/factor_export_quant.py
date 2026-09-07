@@ -247,6 +247,15 @@ def build_quant_scores(
         start = TIMELINE["train_start"]
     if end is None:
         end = TIMELINE["test_end"]
+    if tickers is None:
+        # Previously this fell through as None → "every ticker in `prices`".
+        # `prices` now also holds benchmark series (SPY), and every factor here
+        # is cross-sectionally z-scored, so an extra column would shift the
+        # score of every candidate. Pin to the canonical universe instead.
+        from src.utils.benchmarks import universe_tickers
+
+        tickers = list(universe_tickers())
+        logger.info(f"  tickers defaulted to universe.csv ({len(tickers)})")
 
     # ── 1. Load data ──────────────────────────────────────────────────
     logger.info(f"Loading prices [{start} → {end}]…")

@@ -80,12 +80,16 @@ def _load_weights() -> pd.DataFrame:
 
 
 def _download_spy(start, end) -> pd.Series:
-    """Download SPY prices via yfinance."""
-    logger.info("Downloading SPY benchmark via yfinance…")
-    raw = yf.download("SPY", start=start, end=end, auto_adjust=True, progress=False)
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
-    return raw["Close"].rename("SPY")
+    """SPY benchmark, served from the frozen `prices` table.
+
+    Previously an unconditional yfinance call, which left the benchmark leg of
+    every SPY-relative result network-dependent and outside the vintage that
+    `scripts/freeze_vintage.py` snapshots. `load_benchmark` reads the DB and
+    only falls back to the network with a loud warning naming the fallback.
+    """
+    from src.data.quant_pipeline import load_benchmark
+
+    return load_benchmark(start, end, ticker="SPY")
 
 
 # ── Prior strategy equity loaders ─────────────────────────────────────────────

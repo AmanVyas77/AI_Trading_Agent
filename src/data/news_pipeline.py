@@ -186,13 +186,23 @@ def _hash(ticker: str, published_at: str, title: str) -> str:
 
 
 def load_universe() -> list[str]:
+    """Candidate tickers from `prices`, minus benchmark series.
+
+    `prices` also stores benchmarks (SPY) so the SPY-relative verdict can read
+    frozen DB rows instead of calling yfinance at run time. Those rows are not
+    candidates: without this filter the AV backfill would spend its daily quota
+    fetching benchmark news and write benchmark rows into `news_articles`.
+    """
+    from src.utils.benchmarks import strip_benchmarks
+
     con = sqlite3.connect(DB_PATH)
     try:
-        return [r[0] for r in con.execute(
+        rows = [r[0] for r in con.execute(
             "SELECT DISTINCT ticker FROM prices ORDER BY ticker"
         )]
     finally:
         con.close()
+    return strip_benchmarks(rows)
 
 
 # ── FNSPID (Phase A) ─────────────────────────────────────────────────────────

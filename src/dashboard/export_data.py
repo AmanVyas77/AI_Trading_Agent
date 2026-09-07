@@ -202,6 +202,10 @@ def export_quant_signals(engine) -> None:
     df["date"] = pd.to_datetime(df["date"])
     pivot = df.pivot(index="date", columns="ticker", values="adj_close")
 
+    # Drop benchmark columns before the cross-sectional z-score below.
+    from src.utils.benchmarks import strip_benchmarks
+    pivot = pivot[strip_benchmarks(pivot.columns)]
+
     # 3-month momentum as proxy quant score
     ret_3m = pivot.pct_change(63)
     monthly = ret_3m.resample("ME").last()
@@ -279,8 +283,11 @@ def export_universe() -> None:
                     result = pd.read_sql_query(
                         text("SELECT DISTINCT ticker FROM prices ORDER BY ticker"), conn
                     )
+                # `prices` also holds benchmark series (SPY) — not universe members.
+                from src.utils.benchmarks import strip_benchmarks
                 records = [{"ticker": t, "name": t, "sector": "Technology",
-                            "market_cap": None} for t in result["ticker"]]
+                            "market_cap": None}
+                           for t in strip_benchmarks(result["ticker"])]
             else:
                 records = []
         except Exception:
@@ -378,6 +385,9 @@ def export_performance(engine) -> None:
         if not all_prices.empty:
             all_prices["date"] = pd.to_datetime(all_prices["date"])
             pivot = all_prices.pivot(index="date", columns="ticker", values="adj_close")
+            # Benchmark series must not become a member of the equal-weight proxy.
+            from src.utils.benchmarks import strip_benchmarks
+            pivot = pivot[strip_benchmarks(pivot.columns)]
             ew_ret = pivot.pct_change().mean(axis=1)
             cum_ew = (1 + ew_ret).cumprod() - 1
             for dt, val in cum_ew.items():

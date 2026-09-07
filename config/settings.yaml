@@ -34,6 +34,10 @@ benchmarks:
   phase1: "XLK"
   phase3: "SPY"
   equal_weight: true   # build equal-weight screen universe for Phase 3
+  # Benchmark series stored in the `prices` table alongside the 54 candidates.
+  # These are NOT universe members. Anything deriving a ticker list from
+  # `prices` must subtract this set — see src/utils/benchmarks.py.
+  tickers: ["SPY"]
 
 # ── Data Sources ─────────────────────────────────────────────
 data:
