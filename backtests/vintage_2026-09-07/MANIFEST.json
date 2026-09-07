@@ -1,7 +1,7 @@
 {
-  "created_utc": "2026-09-07T03:46:36.301238+00:00",
+  "created_utc": "2026-09-07T03:47:45.091421+00:00",
   "purpose": "Frozen data vintage for the Markov exit-layer diagnostic (Prompts 2-4). The AV backfill retroactively revises historical rows nightly; this snapshot makes those prompts mutually comparable.",
-  "git_head": "1e4e4426010dd1f72413ab0d6a10b4120dca2873",
+  "git_head": "520b5b20653c42bf00164eebb675ff4b8cc50358",
   "git_branch": "main",
   "git_dirty": true,
   "interpreter": {
