@@ -445,6 +445,12 @@ class FinBERTScorer:
 
         logger.info("FinBERT model loaded successfully")
 
+    @staticmethod
+    def _probs_to_score(results: list[dict]) -> float:
+        """P(positive) − P(negative) from one FinBERT top_k=None result list."""
+        probs = {r["label"].lower(): r["score"] for r in results}
+        return probs.get("positive", 0.0) - probs.get("negative", 0.0)
+
     def score_text(self, text_content: str) -> float:
         """
         Score a single text string. Returns a float in [-1.0, +1.0].
@@ -460,8 +466,35 @@ class FinBERTScorer:
             return 0.0
 
         results = self._pipeline(text_content[:10000], top_k=None)
-        probs = {r["label"].lower(): r["score"] for r in results}
-        return probs.get("positive", 0.0) - probs.get("negative", 0.0)
+        return self._probs_to_score(results)
+
+    def score_texts(self, texts: list[str], batch_size: int = 32) -> list[float]:
+        """Batched form of :meth:`score_text` — same model, same arithmetic.
+
+        Added for the Sprint 9B news pass: `score_text` is one forward pass per
+        string, which does not finish 442k articles in reasonable time. This
+        runs the identical pipeline over a padded batch and applies the identical
+        ``P(positive) − P(negative)`` reduction via :meth:`_probs_to_score`, so
+        the news column lands on exactly the same scale as the 8-K column.
+
+        Empty/whitespace strings score 0.0 without a forward pass, matching
+        `score_text`. Returns one float per input, in input order.
+        """
+        self._load()
+
+        if not texts:
+            return []
+
+        out: list[float] = [0.0] * len(texts)
+        idx = [i for i, t in enumerate(texts) if t and t.strip()]
+        if not idx:
+            return out
+
+        payload = [texts[i][:10000] for i in idx]
+        results = self._pipeline(payload, top_k=None, batch_size=batch_size)
+        for i, res in zip(idx, results):
+            out[i] = self._probs_to_score(res)
+        return out
 
     def score_chunks(self, chunks: list[str]) -> tuple[float, int]:
         """
