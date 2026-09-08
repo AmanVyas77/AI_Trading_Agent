@@ -167,9 +167,20 @@ n per era.
 **R4 (new — assembly rule is decided by measurement, against a table fixed in
 advance).** The REV 2 rule (`fnspid ≤ 2021-12`, `alphavantage ≥ 2022-01`) is
 **suspended**, not adopted. Prompt 2 runs the calibration and selects the rule
-from the pre-committed decision table in that prompt. The table is fixed *now*,
-before any number is seen, so the choice is evidence-driven rather than
-outcome-driven.
+from the pre-committed decision table in that prompt. The table was fixed
+**2026-09-07**, before any number was seen, so the choice is evidence-driven
+rather than outcome-driven.
+
+> **AMENDED 2026-09-08**, after Prompt 1 scored the corpus and before Prompt 2
+> ran. Two changes, both driven by measured properties of the *input text* with
+> the dependent variable still entirely unseen: U-z now standardises per
+> `(source × text_shape)` cell rather than per source, and RULE T now fires on
+> the `fnspid/title_snippet` cell — 86.4% of which is hard-truncated at 2,000
+> characters — with the remedy being to re-score those 105,049 rows on title
+> alone rather than to discard 58,872 `title_only` rows that were never the
+> outlier. The rho and |dmean| thresholds, the pairing requirement, the four
+> STEP 3 branches and the `rho < 0.20` STOP are **unchanged**. Full record and
+> justification at the head of Prompt 2.
 
 **R5 (new — judging window).** Sprint 9B does **not** take a verdict on the
 2023-01 → 2024-12 test fold. That fold has judged ~6 experiments and it straddles
@@ -335,10 +346,49 @@ You are continuing Sprint 9B at /Users/aman/dev/Ai Trading Agent.
 Prompt 2 of 6. Prompt 1 scored the corpus into news_sentiment_scores.
 REPO GUARD first.
 
-This prompt DECIDES the assembly rule (ruling R4). The decision table
-below was fixed before any number was seen. Apply it mechanically. Do
-not improvise a fifth outcome, and do not adjust a threshold because a
-statistic landed just outside it — if that happens, report it and STOP.
+This prompt DECIDES the assembly rule (ruling R4). Apply the table
+mechanically. Do not improvise an outcome the table does not name, and
+do not adjust a threshold because a statistic landed just outside it —
+if that happens, report it and STOP.
+
+── AMENDMENTS TO R4, RECORDED 2026-09-08, BEFORE THIS PROMPT RAN ──────
+
+The table was first fixed on 2026-09-07, before the corpus had been
+scored. Prompt 1 then measured two facts about the INPUTS that the
+original table did not anticipate. Both amendments were approved by
+Aman on 2026-09-08 and are recorded here, in the file, before Prompt 2
+executes.
+
+  AMENDMENT 1 — U-z standardises per (source x text_shape) cell, four
+  streams, not per source, two streams. Reason: the measured means run
+  +0.284 / +0.147 / +0.085 / -0.008 across the four cells, so pooling
+  by source alone would leave a ~0.09 gap inside the FNSPID stream and
+  a ~0.29 gap between the two title_snippet cells unaddressed.
+
+  AMENDMENT 2 — RULE T's trigger and remedy both change. It now fires
+  on the fnspid/title_snippet cell rather than on title_only, and its
+  remedy is to re-score those rows on title alone rather than to
+  discard them. Reason: 86.4% of that cell is hard-truncated at 2,000
+  characters, and fnspid/title_only sits BETWEEN the two snippet cells,
+  so the original remedy would have dropped 58,872 articles that are
+  not the problem while leaving 105,049 that are.
+
+  WHY THIS IS NOT PEEKING, stated so a later reader can check the
+  claim rather than take it on trust: both amendments respond to
+  properties of the INPUT TEXT — cell means, string lengths, truncation
+  rates. At the time they were made, no forward return, no label, no
+  rank IC and no Sharpe had been computed against the news feature; the
+  dependent variable was entirely unseen and remains so until Prompt 4.
+  R4 exists to stop the assembly rule being selected by OUTCOME, and
+  that constraint is intact. The amendments are recorded with their
+  date and reasoning precisely so the ordering is auditable.
+
+  What did NOT change: the rho thresholds (0.50 / 0.20), the |dmean|
+  threshold (0.25 * xsd), the >= 5 articles pairing requirement, the
+  four named branches of STEP 3, and the rho < 0.20 STOP. Those are
+  untouched from the 2026-09-07 fixing.
+
+── END AMENDMENTS ─────────────────────────────────────────────────────
 
 STEP 1 — Build the paired panel.
 On the overlap window 2022-01 → 2023-12, for every (ticker, month) where
@@ -363,10 +413,14 @@ STEP 3 — The pre-committed decision table.
          measurably interchangeable.
 
   rho >= 0.50 AND |dmean| >  0.25 * xsd
-      -> RULE U-z. Union, but first z-score EACH source's monthly
-         aggregates within its OWN history (expanding, backward-only —
-         never a full-sample z-score, which would be lookahead), then
-         pool the standardised values weighted by article count.
+      -> RULE U-z. Union, but first z-score each of the FOUR
+         (source x text_shape) CELLS within its OWN history (expanding,
+         backward-only — never a full-sample z-score, which would be
+         lookahead), then pool the standardised values weighted by
+         article count. See AMENDMENT 1 at the head of this prompt: the
+         cells are per-cell, NOT per-source, because the measured
+         heterogeneity runs along text_shape at least as strongly as
+         along source.
 
   0.20 <= rho < 0.50
       -> RULE D. Denser source per era: FNSPID through 2023-12,
@@ -379,16 +433,47 @@ STEP 3 — The pre-committed decision table.
          stitch premise fails. Report the numbers and end the session —
          do not pick a rule.
 
-STEP 4 — Isolate the text-shape confound.
+STEP 4 — Isolate the text-shape confound (REVISED, see AMENDMENT 2).
 Repeat STEP 2 twice more, splitting the FNSPID side by text_shape:
-  rho_snippet  = rho computed on pairs where the FNSPID side is title_snippet
-  rho_title    = rho computed on pairs where the FNSPID side is title_only
-If rho_snippet >= 0.50 while rho_title < 0.20, the seam is a TEXT-SHAPE
-seam, not a source seam. In that case RULE T applies on top of whichever
-rule STEP 3 selected: exclude title_only articles from feature
-aggregation entirely (they stay in the DB, they just do not feed the
-mean), and re-run STEP 2 and STEP 3 on the filtered panel to confirm the
-selected rule is stable. Report the article loss this causes, by year.
+  rho_snippet  = rho on pairs where the FNSPID side is title_snippet
+  rho_title    = rho on pairs where the FNSPID side is title_only
+
+Prompt 1 measured, on the full scored corpus:
+
+  source        text_shape       count     mean    %|s|<.05  capped@2000
+  alphavantage  title_snippet  278,799   +0.2843     7.7%       0.0%
+  alphavantage  title_only          20   +0.1466    30.0%          —
+  fnspid        title_only      58,872   +0.0851    24.3%          —
+  fnspid        title_snippet  105,049   -0.0078    16.0%      86.4%
+
+So the suspect cell is fnspid/title_snippet — 86.4% of it is hard-
+truncated at exactly 2,000 characters (mean length 1,909, cut mid-word),
+i.e. ~490 tokens of raw article body, against AV's coherent ~475-char
+summaries. fnspid/title_only (+0.085) sits BETWEEN the two snippet
+cells, so title_only is NOT the outlier and must not be what gets
+dropped.
+
+  If rho_title >= 0.50 AND rho_snippet < 0.20
+      -> RULE T fires. The seam is a TEXT-SHAPE seam, not a source seam,
+         and the truncated bodies are the cause. Remedy: RE-SCORE those
+         105,049 rows on TITLE ALONE, discarding the truncated body.
+         Do NOT discard the articles. Re-scoring writes NEW rows under a
+         distinct model_name/text_shape marker — never an overwrite; the
+         immutability rule (INSERT OR IGNORE, a score frozen once
+         written) is not suspended for this. Decide and state the schema
+         change needed, since article_hash is the PRIMARY KEY and the
+         same article now carries two scores under two text treatments.
+         Then re-run STEP 2 and STEP 3 on the re-levelled panel and
+         confirm the selected rule is stable.
+  If both rho_title and rho_snippet clear 0.50
+      -> no text-shape remedy; the per-cell z-scoring in U-z already
+         absorbs the level difference. Say so explicitly.
+  Any other combination
+      -> report it and STOP. The table does not cover it, and improvising
+         a fifth outcome after seeing the numbers is exactly what the
+         pre-registration exists to prevent.
+
+Report the article count affected by whichever branch fires, by year.
 
 STEP 5 — Report the density context alongside the verdict, always.
 Whatever rule is selected, print the resulting median articles per
