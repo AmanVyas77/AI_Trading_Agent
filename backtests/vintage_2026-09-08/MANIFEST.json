@@ -1,0 +1,80 @@
+{
+  "created_utc": "2026-09-08T23:43:01.968773+00:00",
+  "purpose": "Frozen data vintage for the Markov exit-layer diagnostic (Prompts 2-4). The AV backfill retroactively revises historical rows nightly; this snapshot makes those prompts mutually comparable.",
+  "git_head": "b231f31ca676818c46e262ac2fb962460d0a4053",
+  "git_branch": "main",
+  "git_dirty": false,
+  "interpreter": {
+    "sys_executable": "/Users/aman/dev/Ai Trading Agent/.venv/bin/python",
+    "python_version": "3.11.7 (main, Dec 15 2023, 12:09:56) [Clang 14.0.6 ]",
+    "numpy": "2.4.4",
+    "sklearn": "1.8.0",
+    "pandas": "2.3.3"
+  },
+  "window": [
+    "2025-01-01",
+    "2026-06-30"
+  ],
+  "frozen": {
+    "quant_research.db": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/quant_research.db",
+      "size_bytes": 970928128,
+      "sha256": "bdb28644942318061f70e9f79cd3392ab48f90e144634bf40636494ae9bbabeb",
+      "mtime_utc": "2026-09-08T12:17:11.054867+00:00",
+      "snapshot_relpath": "quant_research.db",
+      "source_relpath": "data/quant_research.db",
+      "verified_after_copy": true
+    },
+    "ensemble_feature_matrix.parquet": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/processed/ensemble_feature_matrix.parquet",
+      "size_bytes": 711224,
+      "sha256": "ede6b9eaa82669dad59c9cb2d02d58d5f503e9de6c2d72555a9b7c5f0e32a710",
+      "mtime_utc": "2026-09-02T03:56:13.229902+00:00",
+      "snapshot_relpath": "ensemble_feature_matrix.parquet",
+      "source_relpath": "data/processed/ensemble_feature_matrix.parquet",
+      "verified_after_copy": true
+    },
+    "holdout_scores.parquet": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/processed/holdout_scores.parquet",
+      "size_bytes": 2813,
+      "sha256": "5739e0ad9baf7d3d6bc30f9004ccc2229bd9fc1ecc4668e6e289c54f136297ce",
+      "mtime_utc": "2026-09-02T14:00:24.427988+00:00",
+      "snapshot_relpath": "holdout_scores.parquet",
+      "source_relpath": "data/processed/holdout_scores.parquet",
+      "verified_after_copy": true
+    }
+  },
+  "referenced": {
+    "ensemble_models.pkl": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/models/ensemble_models.pkl",
+      "size_bytes": 4120378,
+      "sha256": "fbad5015b6d9099eaf909f5036324a24b9b81dffabef79d83cce8517a1ad61af",
+      "mtime_utc": "2026-08-04T00:04:52.799823+00:00",
+      "source_relpath": "models/ensemble_models.pkl",
+      "copied": false,
+      "md5": "296e589f4da205eb1d171c2121d90f82",
+      "md5_expected": "296e589f4da205eb1d171c2121d90f82"
+    },
+    "settings.yaml": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/config/settings.yaml",
+      "size_bytes": 7133,
+      "sha256": "a490510e9b6f6dc294cd7fe0b9c2a0f88d9a1c5dbd7b0a8fc444e55c8ddd20f3",
+      "mtime_utc": "2026-09-07T03:28:31.223537+00:00",
+      "source_relpath": "config/settings.yaml",
+      "copied": false
+    }
+  },
+  "price_vintage": {
+    "sha256": "3e8dd196c4ea9b62c721414cfa61a2ab8c1e7c29e85a27ebe5ed98bd19e95b93",
+    "n_rows": 20515,
+    "n_tickers": 55,
+    "date_min": "2025-01-02",
+    "date_max": "2026-06-30",
+    "window": [
+      "2025-01-01",
+      "2026-06-30"
+    ],
+    "table": "prices"
+  },
+  "price_vintage_matches_source_at_freeze_time": true
+}
