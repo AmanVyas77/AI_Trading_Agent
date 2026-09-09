@@ -1,4 +1,69 @@
-# Sprint 9B — News Sentiment as the 24th Feature (modelling half) — REV 1
+# Sprint 9B — News Sentiment as the 24th Feature (modelling half) — REV 2
+
+## REV 2 CHANGELOG (2026-09-09) — the stitch is dead, read this first
+
+Prompt 2 ran and **landed on the table's STOP**. The design changed materially as
+a result. Read this before anything else in the file; several sections below now
+describe a plan that is no longer being executed and are marked as such.
+
+**What Prompt 2 measured** (`backtests/results/sprint9b_calibration.json`, panel
+of 451 ticker-months, 27 tickers × 24 months, 2022-01 → 2023-12):
+
+```
+dmean  = +0.350531        (AV +0.327130 vs FNSPID -0.023401)
+sratio =  1.037942        (dispersions near-identical)
+rho    = +0.207759        (p = 8.6e-06, n = 451)
+xsd    =  0.271471   ->   |dmean| = 1.29 x xsd
+bootstrap 95% CI on rho = [+0.1129, +0.2965]   P(rho < 0.20) = 43.3%
+```
+
+**Three findings, in order of importance.**
+
+1. **STEP 4 is unexecutable by construction.** FNSPID stopped emitting
+   `title_only` rows on **2020-06-11**; Alpha Vantage began on **2022-01-01**.
+   Zero paired ticker-months exist at any article threshold, so `rho_title`
+   cannot be computed. Inside the overlap window the FNSPID side is 100%
+   `title_snippet`, which is why `rho_snippet` equals `rho` exactly. The
+   diagnostic that was meant to separate a *source* seam from an *instrument*
+   seam does not exist on this corpus and cannot be repaired by moving a
+   threshold.
+2. **AMENDMENT 2's premise was wrong, and it was mine.** It argued that
+   `fnspid/title_only` (+0.085) "sits BETWEEN the two snippet cells, so
+   title_only is NOT the outlier". That ordering came from full-corpus cell
+   means — but `fnspid/title_only` is entirely 2015–2020 and never coexists with
+   AV. I compared cell means as though they were contemporaneous when they are
+   not. The comparison was confounded and the conclusion drawn from it does not
+   hold.
+3. **The seam is a pure level shift larger than the signal itself.**
+   `sratio ≈ 1.04` means the dispersions match almost exactly; `|dmean|` is
+   **1.29× the entire cross-sectional spread**. Combined with weak rank
+   agreement (rho 0.21, CI straddling the STOP line at P = 43.3%), the two
+   sources are not interchangeable instruments.
+
+**The ruling (Aman, 2026-09-09): abandon the stitch. Go AV-only, retrain both
+arms.** The STOP is honoured — for the structural reason in finding 1, not for
+the knife-edge in the CI. Three consequences, each written into the relevant
+ruling below:
+
+- **R4 is SUPERSEDED.** There is no assembly rule to select, because there is
+  nothing to assemble: one source, `alphavantage`, 2022-01 → present, 56 months.
+  It matches the pre-registered forward window exactly, which is 100% AV.
+- **R3 is AMENDED** to add the cross-sectional standardisation that every other
+  ticker-varying feature in this repo already gets, and that R3 omitted. This is
+  a correction of an inconsistency, verifiable by reading
+  `factor_export_quant._cs_zscore` and `xbrl_features` — it does not depend on
+  any calibration number.
+- **R6/L1 is AMENDED.** Both arms must train on the identical 2022+ window, or
+  the comparison confounds "news" with "less training data". This makes it a
+  clean test of whether news adds anything, and **no longer** a test of whether
+  news24 should replace production.
+
+**What AV-only does NOT fix: density.** AV-only ticker-month medians run
+2022: 13 → 2023: 8 → 2024: 9 → 2025: 20 → 2026: 199, a 22× swing *inside* the
+single-instrument era. R3's shrinkage remains the remedy for that, unchanged.
+The stitch decision fixed the **instrument** problem only.
+
+---
 
 **Supersedes the modelling half of `Sprint9_Prompts.md` REV 2 (Prompts 3–5).**
 The ingestion half of REV 2 is DONE and is not repeated here: 439,727 articles,
@@ -152,9 +217,9 @@ has no equivalent field and the asymmetry would be perfectly collinear with era.
 at assembly time. GOOGL's `MAX(published_at)` of 2020-06-10 is by design, not a
 gap.
 
-**R3 (new — aggregation).** Shrinkage toward the contemporaneous cross-sectional
-mean, weight `n/(n+k)`, **k = 10 fixed a priori**. No article-count floor. No NaN
-ever emitted. At n=0 the formula returns the cross-sectional mean directly, so
+**R3 (new — aggregation). AMENDED 2026-09-09 — see R3-A below.** Shrinkage
+toward the contemporaneous cross-sectional mean, weight `n/(n+k)`, **k = 10 fixed
+a priori**. No article-count floor. No NaN ever emitted. At n=0 the formula returns the cross-sectional mean directly, so
 `_prepare_xy`'s and `live/scorer.py`'s `fillna(0.0)` never fires on this column
 and **`_prepare_xy` is not modified** — the frozen 23 features keep their exact
 current treatment and comparability with prior sprints is preserved.
@@ -164,23 +229,39 @@ rate runs 21.6% → 5.5% → 0% across eras, so such an indicator would hand the
 model a clean calendar variable. Report realized shrinkage weight and effective
 n per era.
 
-**R4 (new — assembly rule is decided by measurement, against a table fixed in
-advance).** The REV 2 rule (`fnspid ≤ 2021-12`, `alphavantage ≥ 2022-01`) is
-**suspended**, not adopted. Prompt 2 runs the calibration and selects the rule
-from the pre-committed decision table in that prompt. The table was fixed
-**2026-09-07**, before any number was seen, so the choice is evidence-driven
-rather than outcome-driven.
+**R3-A (amendment to R3, 2026-09-09) — cross-sectional standardisation.**
+After shrinkage and after the EWM, **z-score `news_sentiment` across tickers
+within each month**, clipping to the same cap `factor_export_quant._cs_zscore`
+uses (read the constant, do not guess it). Order is **shrink → EWM →
+cross-sectional z**, so the z-score is the final step, matching how the quant
+factors are built (`factors[label] = _cs_zscore(ret)`).
 
-> **AMENDED 2026-09-08**, after Prompt 1 scored the corpus and before Prompt 2
-> ran. Two changes, both driven by measured properties of the *input text* with
-> the dependent variable still entirely unseen: U-z now standardises per
-> `(source × text_shape)` cell rather than per source, and RULE T now fires on
-> the `fnspid/title_snippet` cell — 86.4% of which is hard-truncated at 2,000
-> characters — with the remedy being to re-score those 105,049 rows on title
-> alone rather than to discard 58,872 `title_only` rows that were never the
-> outlier. The rho and |dmean| thresholds, the pairing requirement, the four
-> STEP 3 branches and the `rho < 0.20` STOP are **unchanged**. Full record and
-> justification at the head of Prompt 2.
+*Why.* Every other ticker-varying feature in this repo is already
+cross-sectionally standardised — the quant factors by `_cs_zscore` per date, the
+fundamental factors by `xbrl_features.build_feature_matrix`, which states it
+"handles cross-sectional standardisation for every feature in FEATURE_COLS".
+Macro is time-series z-scored, correctly, since it does not vary across tickers.
+R3 as originally written would have made `news_sentiment` **the only
+ticker-varying feature entering the matrix un-standardised**, on a raw
+[−1, +1] FinBERT scale. That was an oversight in my design, findable by reading
+the code and independent of any calibration number.
+
+*Two consequences worth knowing.* It makes `dmean` and `sratio` irrelevant by
+construction — a level shift common to all tickers in a month cancels under
+per-month demeaning, and a dispersion ratio divides out — which is why two of
+Prompt 2's three statistics stop mattering once the stitch is gone. And it means
+a ticker-month with zero articles, which R3 maps to `xsec(m)`, lands at
+approximately **0** after standardisation: the cross-sectional centre. The
+"never emits NaN" design and the standardisation converge on the same place.
+
+**R4 (assembly rule) — SUPERSEDED 2026-09-09. Do not execute Prompt 2.**
+Prompt 2 ran, landed on the table's STOP, and the stitch was abandoned. There is
+no assembly rule left to select: the corpus is **`alphavantage` only, 2022-01 →
+present**, one instrument, no seam, no blending, no calibration. The full record
+of what R4 was, how it was amended on 2026-09-08, what Prompt 2 measured and why
+the STOP was honoured is in the REV 2 changelog at the head of this file and in
+`backtests/results/sprint9b_calibration.json`. **FNSPID rows stay in the
+database and stay scored — they simply do not feed the feature.**
 
 **R5 (new — judging window).** Sprint 9B does **not** take a verdict on the
 2023-01 → 2024-12 test fold. That fold has judged ~6 experiments and it straddles
@@ -189,11 +270,29 @@ model and **pre-registers a forward window** whose density is uniform. The
 2023-24 fold is run once as a smoke diagnostic, recorded with
 `verdict_eligible: false`, and may never be cited to accept the feature.
 
-**R6 (new — verdict rule with an SPY leg).** The rule is stated in full in
-Prompt 5. Its SPY leg is a **paired** comparison of SPY-excess Sharpe between the
-24-feature model and the 23-feature production model **over the same forward
-window**, not a comparison against Sprint 5's −0.876 (which was measured on a
-different window and does not transfer).
+**R6 (new — verdict rule with an SPY leg). AMENDED 2026-09-09.** The rule is
+stated in full in Prompt 5. Its SPY leg is a **paired** comparison of SPY-excess
+Sharpe **over the same forward window**, not a comparison against Sprint 5's
+−0.876 (which was measured on a different window and does not transfer).
+
+> **AMENDMENT (2026-09-09).** The paired baseline is no longer the production
+> model. Going AV-only means news24 can only train from 2022-01, while
+> production trains on the full history — so comparing them would confound
+> "news" with "less training data". **Both arms now train on the identical
+> 2022-01 → 2026-08 window, identical folds, identical hyperparameters, the only
+> difference being the news column.** The shadow harness therefore carries
+> **three** arms:
+>
+> - `base23` — 23 features, retrained on 2022+. **This is L1's baseline.**
+> - `news24` — 24 features, retrained on 2022+. Identical to `base23` but for
+>   the one column.
+> - `prod23` — the untouched production model. **Reported for context only, never
+>   a verdict leg**, since it trains on a different window.
+>
+> This is a cleaner test of *"does news add anything"* than the original design.
+> It is explicitly **not** a test of *"should news24 replace production"* — that
+> question is not asked by this sprint and a PASS must not be read as answering
+> it. Say so in the pre-registration.
 
 **House conventions (unchanged).** The agent designs and executes but **never
 runs `git commit` or `git push`** — Prompt 6 prints literal copy-paste commands
@@ -339,7 +438,21 @@ gap). State you are ready for Prompt 2.
 
 ---
 
-## PROMPT 2 of 6 — Seam calibration, and the rule it selects
+## PROMPT 2 of 6 — Seam calibration — ✅ EXECUTED 2026-09-09, OUTCOME: STOP
+
+> **DO NOT RUN THIS PROMPT AGAIN.** It was executed once, at HEAD `53b71bf`, and
+> it reached the table's STOP. The text below is preserved verbatim as the record
+> of what was actually asked — including AMENDMENT 2, whose premise turned out to
+> be wrong. Do not "fix" it retroactively; an amended record of a pre-registered
+> rule is worthless. What it produced, and the ruling that followed, are in the
+> REV 2 changelog at the head of this file and in
+> `backtests/results/sprint9b_calibration.json`.
+>
+> **Outcome in one line:** rho = 0.2078 (CI [0.113, 0.297], P(rho<0.20) = 43.3%),
+> |dmean| = 1.29 × xsd, sratio = 1.04, and STEP 4 unexecutable because FNSPID's
+> title-only cell ends 2020-06 while AV starts 2022-01 — zero paired months at
+> any threshold. STEP 3 pointed at RULE D on a knife-edge; STEP 4 landed on the
+> uncovered combination the table answers with STOP. **The stitch was abandoned.**
 
 ```
 You are continuing Sprint 9B at /Users/aman/dev/Ai Trading Agent.
@@ -498,6 +611,25 @@ Prompt 3.
 You are continuing Sprint 9B at /Users/aman/dev/Ai Trading Agent.
 Prompt 3 of 6. Prompt 2 selected the assembly rule. REPO GUARD first.
 
+⚠ REV 2 — READ THE CHANGELOG AT THE HEAD OF THIS FILE FIRST. Prompt 2
+reached the table's STOP and the stitch was abandoned. Two things this
+prompt now does differently from how it was first drafted:
+
+  (a) THE CORPUS IS alphavantage ONLY, published_at >= 2022-01-01.
+      There is no assembly rule, no calibration, no per-source or
+      per-cell z-scoring, no RULE T, and no FNSPID row feeds the
+      feature. FNSPID rows stay in the DB and stay scored; they are
+      simply not read. Filter on source explicitly and assert the
+      filter caught what you expect: 278,819 AV rows, 0 fnspid, in the
+      frame you aggregate from.
+  (b) R3-A ADDS CROSS-SECTIONAL STANDARDISATION as the final step.
+      See the formula section below.
+
+Note what AV-only does NOT fix. Density inside the AV era still runs
+2022: 13 -> 2023: 8 -> 2024: 9 -> 2025: 20 -> 2026: 199 median articles
+per ticker-month, a 22x swing. R3's shrinkage is still the remedy and is
+unchanged. Report the per-year realised shrinkage weights as specified.
+
 Build `load_news_sentiment(start, end, engine=None)` returning
 [ticker, date (month-end), news_sentiment], and write
 data/processed/news_sentiment_scores.parquet for audit.
@@ -539,12 +671,33 @@ For one ticker i in one calendar month m:
   0 * NaN is NaN, not 0. This one line is the difference between "never
   emits NaN" and "silently emits NaN in 21.6% of training rows".
 
-  news_sentiment(i,m) is then the per-ticker exponentially weighted
-  moving average of the shrunk series over months, span = 4 (the Arratia
-  convention this repo already uses in _ewm_smooth for the 8-K and LM
-  columns). SHRINK FIRST, SMOOTH SECOND. Smoothing first and shrinking
-  second would apply a single month's article count to a value that
-  already mixes four months.
+  smoothed(i,m) is the per-ticker exponentially weighted moving average
+  of the shrunk series over months, span = 4 (the Arratia convention
+  this repo already uses in _ewm_smooth for the 8-K and LM columns).
+  SHRINK FIRST, SMOOTH SECOND. Smoothing first and shrinking second
+  would apply a single month's article count to a value that already
+  mixes four months.
+
+  news_sentiment(i,m) — R3-A, ADDED 2026-09-09 — is then the CROSS-
+  SECTIONAL z-score of smoothed(i,m) across all tickers within month m,
+  clipped to the same cap factor_export_quant._cs_zscore uses. READ that
+  constant from the code; do not guess it. In words: within each month,
+  subtract the mean of smoothed across the 53 tickers and divide by its
+  standard deviation, then clip.
+
+  ORDER IS: shrink -> EWM -> cross-sectional z. The z-score is LAST,
+  matching how the quant factors are built (factors[label] =
+  _cs_zscore(ret)), so the column arrives at the matrix on the same
+  scale as its 23 neighbours instead of on FinBERT's raw [-1, +1].
+
+  Two things this changes, state both in your report:
+    - A ticker-month with zero articles maps to xsec(m) by the shrinkage
+      branch, and xsec(m) is the cross-sectional mean, so after
+      standardisation it lands at approximately 0 — the cross-sectional
+      centre. The "never emits NaN" rule and the standardisation agree.
+    - Any level shift common to all tickers in a month cancels. This is
+      what makes the abandoned stitch's dmean and sratio irrelevant, and
+      it is worth confirming numerically rather than asserting.
 
 ── WORKED EXAMPLE, INTERMEDIATE STEPS SHOWN ───────────────────────────
 
@@ -634,9 +787,19 @@ is identical.
 
 ── VERIFY ─────────────────────────────────────────────────────────────
 
-1. Rebuild the training matrix: --start 2015-01-01 --end 2024-12-31.
-   Assert 24 feature columns. Assert the (date,ticker) index matches the
-   pre-change matrix exactly. Assert news_sentiment has ZERO NaN.
+1. Rebuild the FULL matrix first: --start 2015-01-01 --end 2026-08-31.
+   Assert 24 feature columns, and assert the (date,ticker) index matches
+   the pre-change matrix EXACTLY — adding a never-NaN column must not
+   change which historical rows survive the NaN-drop (see the warning
+   above). news_sentiment will be exactly 0.0 for every month before
+   2022-01, because with no AV articles every ticker falls to xsec(m)
+   and standardising a constant vector gives zeros. That is correct and
+   expected; confirm it rather than treating it as a bug, and confirm it
+   is EXACTLY zero, not merely small.
+   Then note for Prompt 4: the SPRINT WINDOW is 2022-01-01 -> 2026-08-31
+   (56 months of AV). Months before 2022 carry a structurally
+   uninformative news column and both arms will be trained on 2022+
+   only, per the R6 amendment.
 2. Report, per year: mean realized shrinkage weight n/(n+k), median
    effective n, and the fraction of ticker-months that fell back
    entirely to xsec (n=0). This is the R3 honesty report — it shows
@@ -644,9 +807,15 @@ is identical.
 3. Hand-trace 3 tickers x 3 months end to end (article count -> raw ->
    xsec -> shrunk -> EWM) and show every intermediate number, as in the
    worked example above.
-4. target_builder: confirm label months/rows are UNCHANGED at 117 /
-   5,974. If they moved, something upstream changed and you must find
-   out what before continuing.
+4. target_builder: confirm label months/rows over the FULL span are
+   UNCHANGED at 117 / 5,974. Adding a never-NaN feature column must not
+   move the label set at all; if it did, something upstream changed and
+   you must find out what before continuing. Then report separately how
+   many label months and rows fall inside the 2022-01 -> 2026-08 sprint
+   window, since that is what both arms will actually train on — and say
+   plainly whether that is enough months for the walk-forward folds
+   given PURGE_MONTHS=3 and EVAL_MONTHS=6. If it is not, STOP and report
+   rather than shrinking a guard to make it fit.
 5. LIVE-PATH SMOKE PROOF: rebuild the live matrix to the last COMPLETED
    month-end (2026-08-31) and run src/live/scorer.py against the
    untouched production pickle. It reindexes to the frozen 23 names and
@@ -680,24 +849,32 @@ sprint outputs go to versioned names. The FINALLY block at the end runs
 in EVERY branch including crashes — if a session dies mid-run, the
 recovery session runs it FIRST, before anything else.
 
-1. Train. model_trainer on the 24-feature labeled parquet, WINDOW_YEARS
-   must be None (Sprint 6 REFUTED the rolling config). Save to
-   models/ensemble_models_sprint9b_news.pkl. Record the md5.
-   Confirm feature_names has 24 entries and news_sentiment is among them
-   — _get_feature_cols picks it up automatically, so if it is missing,
-   the matrix did not save what you think it saved.
+1. Train TWO arms, identically (R6 amendment, 2026-09-09). Same window
+   2022-01-01 -> 2026-08-31, same folds, same hyperparameters,
+   WINDOW_YEARS None (Sprint 6 REFUTED the rolling config). The ONLY
+   difference between them is the presence of the news column.
+     base23 -> models/ensemble_models_sprint9b_base.pkl   (23 features)
+     news24 -> models/ensemble_models_sprint9b_news.pkl   (24 features)
+   Build base23 by dropping news_sentiment from the labeled parquet, not
+   by reusing any earlier pickle — an arm trained on a different window
+   is not a control. Record both md5s. Confirm feature_names is 23 and
+   24 respectively and that news_sentiment appears in exactly one of
+   them. Confirm both report the same fold count and the same
+   effective_train_end per fold; if they differ, the arms are not paired
+   and you must find out why before continuing.
 
-2. Reference-only diagnostic on 2023-01 -> 2024-12. Run
-   score_generator -> portfolio_builder -> backtest. Copy outputs to
-   backtests/results/ensemble_news_ref_{train,test}_equity.csv. Compute
-   the usual metrics AND the SPY-relative ones (SPY now comes from the
-   `prices` table per Prompt 0, not yfinance).
-   Every one of these numbers is written to the results JSON under a
-   block literally named "reference_only_not_verdict_eligible": true.
-   Write one sentence in the JSON explaining why: the fold has judged ~6
-   prior experiments, and the corpus's median density inside it runs 21
-   in 2023 and 9 in 2024, so the feature does not mean the same thing
-   across the fold.
+2. NO 2023-24 REFERENCE BACKTEST. It was in REV 1 and is deliberately
+   removed. Under AV-only training the 2023 test fold would train on
+   about twelve months of 2022, so the run would measure the thinness of
+   the training window rather than anything about news. Running it
+   anyway would spend a 7th experiment on that fold to learn nothing.
+   Instead, three cheap sanity checks that do NOT touch an equity curve:
+     - both arms train to completion and produce the expected fold count
+     - news_sentiment has non-zero mean importance in news24
+     - in-sample monthly cross-sectional rank IC of news_sentiment over
+       2022-01 -> 2026-08, reported with mean, sd, n and t
+   If news_sentiment has literally zero importance across every fold,
+   say so prominently — that is a STOP finding, not a footnote.
 
 3. News diagnostics from the new pickle:
    - news_sentiment deflated-t, and its gain rank out of 24
@@ -725,11 +902,17 @@ recovery session runs it FIRST, before anything else.
 
    An "arm" is a named scoring strategy: {name, description, score_fn}
    where score_fn(feature_matrix_slice, month_end) -> Series indexed by
-   ticker. Sprint 9B registers exactly two:
-     "prod23"  — production 23-feature pickle
-     "news24"  — models/ensemble_models_sprint9b_news.pkl
-   A future sprint will register a third whose score_fn calls the Claude
-   analyst instead of a pickle. Do NOT hard-code two pickles, do not
+   ticker. Sprint 9B registers THREE (R6 amendment, 2026-09-09):
+     "base23"  — models/ensemble_models_sprint9b_base.pkl, 2022+ window.
+                 THIS IS L1's BASELINE.
+     "news24"  — models/ensemble_models_sprint9b_news.pkl, 2022+ window.
+                 Identical to base23 but for the one column.
+     "prod23"  — the untouched production pickle. CONTEXT ONLY, never a
+                 verdict leg, because it trains on a different window.
+                 Mark it in the JSON with "verdict_eligible": false so a
+                 later reader cannot mistake it for the control.
+   A future sprint will register a fourth whose score_fn calls the Claude
+   analyst instead of a pickle. Do NOT hard-code the arm list, do not
    name the JSON keys after pickles, and do not assume an arm's score
    comes from a model file at all.
 
@@ -823,19 +1006,24 @@ The bars below are set as SCREENING bars accordingly, and a PASS means
 ── THE RULE (ruling R6), FIXED NOW ────────────────────────────────────
 Over the pre-registered window, PASS requires ALL FOUR:
 
-  L1  SPY LEG, PAIRED. ExcessSharpe(news24) > ExcessSharpe(prod23),
+  L1  SPY LEG, PAIRED. ExcessSharpe(news24) > ExcessSharpe(base23),
       where ExcessSharpe = strategy annualised Sharpe minus SPY
       annualised Sharpe over the IDENTICAL window, SPY read from the
-      `prices` table. Both books are simulated from the same shadow
-      records, so this is a paired comparison on shared market
-      exposure — which is the only reason 24 monthly observations can
-      say anything at all.
+      `prices` table. Both arms are simulated from the same shadow
+      records and were trained on the same 2022+ window with the same
+      folds, so this is a paired comparison differing in exactly one
+      feature column — which is the only reason 24 monthly observations
+      can say anything at all.
+      THE BASELINE IS base23, NOT prod23 (R6 amendment 2026-09-09).
+      prod23 trains on the full history; comparing against it would
+      confound "news" with "more training data". Report prod23's numbers
+      alongside for context, clearly marked as not a verdict leg.
       NOTE: this leg deliberately does NOT require beating SPY. Sprint
       5's -0.876 excess Sharpe was measured on 2023-24 and does not
-      transfer to a different window; the baseline here is the
-      production model measured on THIS window. A PASS on L1 therefore
-      means "news narrowed the gap to the index", not "the strategy
-      beats the index". Report the absolute gap alongside it, always.
+      transfer. A PASS on L1 means "adding the news column improved the
+      SPY-excess Sharpe of an otherwise identical model", NOT "the
+      strategy beats the index" and NOT "news24 should replace
+      production". Report the absolute gap to SPY alongside, always.
 
   L2  NEWS IC LEG. Mean monthly cross-sectional Spearman rank IC of
       news_sentiment vs next-month forward return > 0, with
@@ -847,8 +1035,16 @@ Over the pre-registered window, PASS requires ALL FOUR:
       splitting on the column across folds, NOT a measure of whether the
       column made money.
 
-  L4  NO DRAWDOWN REGRESSION. MaxDD(news24) >= MaxDD(prod23) - 5.0pp
-      over the window.
+  L4  NO DRAWDOWN REGRESSION. MaxDD(news24) >= MaxDD(base23) - 5.0pp
+      over the window. Baseline is base23, same amendment as L1.
+
+WHAT THIS SPRINT DOES NOT ASK. Because both arms train on 2022+ only,
+neither resembles production, and a PASS says nothing about whether
+news24 should be deployed. The question answered is narrow and worth
+stating in one sentence in the document: does adding a news-sentiment
+column improve an otherwise identical model over the forward window?
+"Should we deploy it" is a separate question needing its own sprint,
+its own window and its own pre-registration.
 
 FAIL if any leg misses. There is no partial credit and no "directionally
 encouraging" outcome.
@@ -863,22 +1059,51 @@ windows.
 
 ── WHAT IS FROZEN ─────────────────────────────────────────────────────
 Record, so a future session can prove nothing moved:
-  - md5 of models/ensemble_models_sprint9b_news.pkl
+  - md5 of models/ensemble_models_sprint9b_news.pkl  (news24)
+  - md5 of models/ensemble_models_sprint9b_base.pkl  (base23, the L1
+    baseline — without this the comparison cannot be reproduced)
   - md5 of models/ensemble_models.pkl (production, 296e589f...)
-  - the Prompt 0 vintage path + MANIFEST sha256 + news_vintage digest
-  - the selected assembly rule from Prompt 2 and the rho/dmean that
-    selected it
-  - k = 10, EWM span = 4, and the shrink-then-smooth order
+  - the latest vintage path + MANIFEST sha256 + news_vintage digest.
+    Use a vintage frozen AFTER the feature parquet exists, and confirm
+    `git status --porcelain --untracked-files=all` is empty for src/ and
+    scripts/ BEFORE freezing — three artifacts in this sprint were
+    frozen or committed while the code that produced them was still
+    loose.
+  - THAT THE STITCH WAS ABANDONED: source = alphavantage only, from
+    2022-01-01, and the Prompt 2 numbers that ruled it out (rho 0.2078,
+    CI [0.113, 0.297], |dmean| 1.29 x xsd, STEP 4 unexecutable)
+  - k = 10, EWM span = 4, shrink -> EWM -> cross-sectional z (R3-A)
+  - the training window 2022-01-01 -> 2026-08-31, identical for both
+    arms, and the fold count each produced
   - git HEAD sha at pre-registration
 
+⚠ A NOTE ON THE MANIFEST'S git_dirty FIELD. It was fixed in 0380363 to
+ignore untracked files, so a manifest frozen after that commit means
+what it says. Any OLDER manifest cited here reads dirty=true purely
+because this repo carries ~13 permanently-untracked paths, and needs
+that caveat attached. The manifest's hard-coded `purpose` string may
+still describe the shelved Markov diagnostic — fix that before it is
+recorded for two years.
+
 ── MULTIPLE-TESTING LEDGER ────────────────────────────────────────────
-State: the 2023-24 fold has now been touched ~7 times and is retired
-from verdict duty for this project. The 2025-26 holdout is SPENT. This
-forward window is experiment #1 on genuinely unseen data, and it gets
-ONE evaluation at 24 months plus one futility check at 12. No variant
-sweeps, no re-runs with a different k, no re-scoring with a different
-sentiment model. If any of those become desirable, they are a NEW
-pre-registration on a NEW window, not an amendment to this one.
+State: the 2023-24 fold has been touched ~6 times and is retired from
+verdict duty for this project — Sprint 9B deliberately did NOT spend a
+7th on it (the REV 1 reference backtest was removed, see Prompt 4 step
+2). The 2025-26 holdout is SPENT. This forward window is experiment #1
+on genuinely unseen data, and it gets ONE evaluation at 24 months plus
+one futility check at 12. No variant sweeps, no re-runs with a different
+k, no re-scoring with a different sentiment model, no re-opening the
+stitch. If any of those become desirable, they are a NEW pre-registration
+on a NEW window, not an amendment to this one.
+
+Record honestly that the pre-registration itself was amended three times
+before the window opened — R4 on 2026-09-08 (per-cell z-scoring,
+retargeted RULE T), then on 2026-09-09 R4 superseded outright, R3
+amended to add cross-sectional standardisation, and R6/L1 repointed at
+base23. Every one of those responded to a property of the INPUTS with
+the dependent variable unseen, and each is dated in this file with its
+reasoning. That is the standard being claimed, and a reader should be
+able to check it against the git history rather than take it on trust.
 
 ── OPERATIONS ─────────────────────────────────────────────────────────
 Specify a scheduled task that runs the shadow harness monthly, one day

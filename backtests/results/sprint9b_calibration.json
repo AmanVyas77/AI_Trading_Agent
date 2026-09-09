@@ -1,0 +1,207 @@
+{
+  "prompt": "Sprint 9B Prompt 2 \u2014 ruling R4 (assembly rule)",
+  "generated_utc": "2026-09-08T23:58:03.962729+00:00",
+  "git_head": "53b71bf79c09fa2bd6a1894d88f1b262ba96f0c4",
+  "interpreter": "/Users/aman/dev/Ai Trading Agent/.venv/bin/python",
+  "amendments_applied": {
+    "amendment_1_uz_per_cell": "recorded 2026-09-08; not exercised (U-z not selected)",
+    "amendment_2_rule_t_on_fnspid_title_snippet": "recorded 2026-09-08; NOT EXECUTABLE \u2014 see step4"
+  },
+  "step1_paired_panel": {
+    "window": [
+      "2022-01",
+      "2023-12"
+    ],
+    "min_articles_per_source": 5,
+    "ticker_months_both_sources_present": 608,
+    "paired_ticker_months": 451,
+    "thin_flag_under_200": false,
+    "articles_behind_panel": {
+      "alphavantage": 11436,
+      "fnspid": 54152
+    }
+  },
+  "step2_statistics": {
+    "dmean": 0.3505308119857299,
+    "mean_av": 0.32712966950393596,
+    "mean_fnspid": -0.023401142481793993,
+    "sratio": 1.037942269941346,
+    "std_av": 0.2111686213819076,
+    "std_fnspid": 0.20344929337335946,
+    "rho_spearman": 0.2077592240121918,
+    "rho_pvalue": 8.646394681269707e-06,
+    "xsd_pooled": 0.2714705154893737,
+    "xsd_per_month_rms": 0.26576740979047153,
+    "threshold_025_xsd_pooled": 0.06786762887234342,
+    "threshold_025_xsd_per_month": 0.06644185244761788,
+    "abs_dmean_within_threshold": false,
+    "dmean_in_xsd_units": 1.2912297726102446
+  },
+  "step3_decision": {
+    "selected_rule": "RULE D",
+    "selecting_branch": "0.20 <= rho < 0.50",
+    "rule_definition": "Denser source per era: FNSPID through 2023-12, alphavantage from 2024-01. Do NOT blend. The seam and the density cliff then coincide at 2024-01 and are no longer separable.",
+    "boundary_fragility": {
+      "margin_over_stop_threshold": 0.007759224012191784,
+      "bootstrap_95ci": [
+        0.11286318496067428,
+        0.2965329449110845
+      ],
+      "p_rho_below_020": 0.4328,
+      "ci_straddles_stop_line": true,
+      "note": "Point estimate selects RULE D per the table. The 95% CI straddles the 0.20 STOP line and P(rho<0.20)=43.3%, so RULE D vs STOP is not resolvable at this sample size. Threshold NOT adjusted; reported as required."
+    }
+  },
+  "step4_text_shape": {
+    "rho_snippet": 0.2077592240121918,
+    "rho_snippet_n_pairs": 451,
+    "rho_title": null,
+    "rho_title_n_pairs": 0,
+    "rho_title_undefined_reason": "fnspid/title_only spans 2015-01-01 to 2020-06-11; alphavantage begins 2022-01-01. The ranges are disjoint by ~19 months, so zero pairs exist at any article threshold. Not a thin statistic \u2014 structurally uncomputable.",
+    "branch": "ANY OTHER COMBINATION -> STOP",
+    "rule_t_fires": false,
+    "outcome": "STOP \u2014 the table does not cover this combination",
+    "note": "rho_snippet == rho exactly, because the FNSPID side inside the overlap window is 100% title_snippet (61,654 articles, 0 title_only). STEP 4 therefore cannot discriminate a text-shape seam from a source seam on this corpus."
+  },
+  "step5_density": {
+    "median_articles_per_ticker_month_by_year": {
+      "2015": {
+        "all_sources": 11,
+        "under_selected_rule": 11
+      },
+      "2016": {
+        "all_sources": 15,
+        "under_selected_rule": 15
+      },
+      "2017": {
+        "all_sources": 17,
+        "under_selected_rule": 17
+      },
+      "2018": {
+        "all_sources": 21,
+        "under_selected_rule": 21
+      },
+      "2019": {
+        "all_sources": 27,
+        "under_selected_rule": 27
+      },
+      "2020": {
+        "all_sources": 19,
+        "under_selected_rule": 19
+      },
+      "2021": {
+        "all_sources": 11,
+        "under_selected_rule": 11
+      },
+      "2022": {
+        "all_sources": 22,
+        "under_selected_rule": 22
+      },
+      "2023": {
+        "all_sources": 21,
+        "under_selected_rule": 33
+      },
+      "2024": {
+        "all_sources": 9,
+        "under_selected_rule": 9
+      },
+      "2025": {
+        "all_sources": 20,
+        "under_selected_rule": 20
+      },
+      "2026": {
+        "all_sources": 199,
+        "under_selected_rule": 199
+      }
+    },
+    "articles_retained_under_rule_d": 424691,
+    "articles_total": 442740,
+    "coverage_cost_note": "RULE D raises median density in 2022-23 by dropping sparse AV-only ticker-months, but REMOVES those ticker-months from the panel entirely: 204 in 2022 (median 9 articles) and 164 in 2023 (median 5)."
+  },
+  "corpus_vintage": {
+    "sha256": "114461e8e12ea76d6a6ab3553772217c9147e2ad9d7c8dcc0788f6a0e3f23617",
+    "n_rows": 442740,
+    "n_sources": 2,
+    "n_tickers": 54,
+    "published_min": "2015-01-01 00:00:00",
+    "published_max": "2026-09-07 17:58:39",
+    "source_year_counts": [
+      [
+        "alphavantage",
+        "2022",
+        10677
+      ],
+      [
+        "alphavantage",
+        "2023",
+        7372
+      ],
+      [
+        "alphavantage",
+        "2024",
+        9045
+      ],
+      [
+        "alphavantage",
+        "2025",
+        61748
+      ],
+      [
+        "alphavantage",
+        "2026",
+        189977
+      ],
+      [
+        "fnspid",
+        "2015",
+        7980
+      ],
+      [
+        "fnspid",
+        "2016",
+        10563
+      ],
+      [
+        "fnspid",
+        "2017",
+        14794
+      ],
+      [
+        "fnspid",
+        "2018",
+        19876
+      ],
+      [
+        "fnspid",
+        "2019",
+        23495
+      ],
+      [
+        "fnspid",
+        "2020",
+        16370
+      ],
+      [
+        "fnspid",
+        "2021",
+        9189
+      ],
+      [
+        "fnspid",
+        "2022",
+        21161
+      ],
+      [
+        "fnspid",
+        "2023",
+        40493
+      ]
+    ],
+    "table": "news_articles"
+  },
+  "session_verdict": {
+    "rule_selected_by_step3": "RULE D",
+    "session_outcome": "STOP at STEP 4",
+    "ready_for_prompt_3": false
+  }
+}
