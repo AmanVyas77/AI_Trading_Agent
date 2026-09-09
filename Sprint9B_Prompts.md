@@ -624,6 +624,16 @@ prompt now does differently from how it was first drafted:
       frame you aggregate from.
   (b) R3-A ADDS CROSS-SECTIONAL STANDARDISATION as the final step.
       See the formula section below.
+  (c) R2 STILL APPLIES — MIRROR GOOG -> GOOGL AT ASSEMBLY. This was
+      dropped from REV 2 by mistake when the file was rewritten for
+      AV-only; R2 was never rescinded. universe.csv contains BOTH
+      tickers, GOOG has 7,163 AV articles since 2022 and GOOGL has
+      ZERO, so without the mirror one ticker in the matrix carries a
+      structurally dead news column for all 56 months. After computing
+      GOOG's monthly aggregate, copy it to GOOGL BEFORE the
+      cross-sectional z-score, so both share classes contribute to and
+      are measured against the same monthly cross-section. Assert
+      afterwards that GOOGL's n, raw and shrunk equal GOOG's exactly.
 
 Note what AV-only does NOT fix. Density inside the AV era still runs
 2022: 13 -> 2023: 8 -> 2024: 9 -> 2025: 20 -> 2026: 199 median articles
@@ -807,15 +817,24 @@ is identical.
 3. Hand-trace 3 tickers x 3 months end to end (article count -> raw ->
    xsec -> shrunk -> EWM) and show every intermediate number, as in the
    worked example above.
-4. target_builder: confirm label months/rows over the FULL span are
-   UNCHANGED at 117 / 5,974. Adding a never-NaN feature column must not
-   move the label set at all; if it did, something upstream changed and
-   you must find out what before continuing. Then report separately how
-   many label months and rows fall inside the 2022-01 -> 2026-08 sprint
-   window, since that is what both arms will actually train on — and say
-   plainly whether that is enough months for the walk-forward folds
-   given PURGE_MONTHS=3 and EVAL_MONTHS=6. If it is not, STOP and report
-   rather than shrinking a guard to make it fit.
+4. target_builder: the invariant to test is that adding a never-NaN
+   feature column does not move the label set AT ALL. Test it that way
+   — build labels from the pre-change matrix and the post-change matrix
+   and compare — rather than against a remembered row count.
+   ⚠ DO NOT expect 117 / 5,974. That figure was carried forward from
+   REV 1 and is STALE: the Sep-1 quant/fundamental rebuild grew the
+   matrix 5,938 -> 7,086 rows and dropped (2015-03-31, ACLS), so the
+   current full-span answer is 117 / 5,973 and was 5,973 before this
+   sprint touched anything. Confirmed against the frozen vintage. If you
+   find yourself investigating a one-row delta, check the baseline
+   before you check the code.
+   Then report how many label months and rows fall inside the
+   2022-01 -> 2026-08 sprint window — that is what both arms train on.
+   ⚠ AS OF 2026-09-09 THIS IS THE KNOWN BLOCKER, resolved by Prompt 3b
+   below: only 35 label months exist (2022-01 .. 2024-11) against the
+   39 required by MIN_TRAIN_MONTHS=36 + PURGE_MONTHS=3, so zero folds
+   can be generated. Do not shrink a guard to make it fit. Run Prompt 3b
+   first, then re-run this check.
 5. LIVE-PATH SMOKE PROOF: rebuild the live matrix to the last COMPLETED
    month-end (2026-08-31) and run src/live/scorer.py against the
    untouched production pickle. It reindexes to the frozen 23 names and
@@ -826,6 +845,93 @@ is identical.
 Output: the full feature_matrix diff, the identical-index proof, the
 per-year shrinkage honesty report, the 3x3 hand-trace, label
 verification, and the live smoke proof. State you are ready for Prompt 4.
+```
+
+---
+
+## PROMPT 3b — XLK into the DB, then extend the label window
+
+**Added 2026-09-09 after Prompt 3 hit the fold STOP.** Run this between
+Prompt 3 and Prompt 4. It is the SPY fix again, for a benchmark that matters
+more.
+
+```
+You are continuing Sprint 9B at /Users/aman/dev/Ai Trading Agent.
+Prompt 3b. REPO GUARD first (branch, .venv interpreter, pickle md5).
+
+WHY THIS EXISTS. target_builder.py:55 sets BENCHMARK = "XLK", line 132
+downloads it from yfinance with end="2025-01-15" HARD-CODED, and caches
+to data/raw/xlk_monthly.csv — which is gitignored and in no frozen
+vintage. label = 1 if a ticker's forward return beats XLK's. So THE
+DEPENDENT VARIABLE OF THIS PROJECT rests on an unfrozen network fetch,
+and every verdict in the project's history was computed against a
+benchmark nobody snapshotted. XLK is not in `prices` (verified: 55
+tickers, SPY present, XLK absent). This is the SPY defect from Prompt 0,
+still live, and worse — SPY was a comparison, XLK makes the labels.
+
+TASK A — XLK into `prices`.
+1. Ingest XLK daily OHLCV + adj_close for 2015-01-01 -> today through
+   the SAME path SPY took (src/data/quant_pipeline.py). Do NOT add XLK
+   to universe.csv — it is a benchmark.
+2. Add "XLK" to benchmarks.tickers in settings.yaml, so it is now
+   ["SPY", "XLK"]. The guard built in Prompt 0 was designed for exactly
+   this: re-run the four-site check and CONFIRM each site now excludes
+   two benchmarks rather than one. Re-run the equality proof and expect
+   (prices - benchmarks) == universe with both diff sets empty. If it
+   does not hold, STOP — the guard is not generalising and a second
+   benchmark row is loose in the z-scoring paths.
+3. Point _load_xlk_monthly() at `prices` via the Prompt 0 benchmark
+   loader. Keep a yfinance fallback ONLY behind the same loud warning
+   and allow_download=False. Remove the hard-coded end="2025-01-15".
+4. Reconcile before regenerating anything: compare the DB XLK monthly
+   series against the existing data/raw/xlk_monthly.csv cache over their
+   overlap. Report max |delta| per month. They will not match exactly —
+   the cache came from a different vintage — so REPORT the differences,
+   do not silently adopt either. If any month differs by more than 0.5%,
+   show it and say which months' labels it could flip.
+
+TASK B — Extend the label window to the pre-registered span.
+REV 2 already committed both arms to 2022-01-01 -> 2026-08-31, so this
+is an implementation fix to reach a window already on the record, NOT a
+new pre-registration decision. The blocker is target_builder.py:89
+clamping prices to TIMELINE["test_end"] (2024-12-31) while prices run to
+2026-09-04.
+1. Thread explicit start/end parameters through target_builder. DO NOT
+   mutate TIMELINE["test_end"] in settings.yaml — it is read elsewhere,
+   including the live matrix build, and changing it would ripple into
+   the production path. Default behaviour with no arguments must stay
+   bit-identical to today.
+2. Regenerate labels to 2026-08-31. Report: label months and rows over
+   the full span, and inside the sprint window. Re-run the fold
+   feasibility check and show months > MIN_TRAIN_MONTHS + PURGE_MONTHS
+   arithmetic explicitly.
+3. Report how many labels CHANGED versus the pre-existing labeled
+   parquet over the overlapping period, and attribute the change: XLK
+   source (DB vs yfinance cache) versus window extension. If labels move
+   in months before 2024-11, that is the XLK swap and it must be
+   quantified, not waved through.
+
+ON TRAINING OVER THE SPENT HOLDOUT — state this in the output.
+Extending labels means both arms TRAIN on 2025-01 -> 2026-06, which is
+the Sprint 7 holdout. That holdout is SPENT, which bars re-EVALUATING
+there; it does not bar training. The forward window (2026-09-30 ->
+2028-09-30) sits strictly after it, so there is no leakage into what
+Sprint 9B will actually be judged on, and nothing is lost that was not
+already spent. Ruled acceptable by Aman on 2026-09-09. Write it into
+sprint9b_preregistration.json so a later reader does not mistake it for
+a broken rule.
+
+TASK C — Re-freeze.
+Before freezing, CONFIRM `git status --porcelain --untracked-files=all`
+is empty for src/ and scripts/. Three artifacts in this sprint were
+frozen or committed while the code that produced them was still loose;
+do not make it four. Then freeze a vintage capturing prices-with-XLK,
+the regenerated labels, and the news feature parquet.
+
+Output: the guard re-run with two benchmarks, the XLK reconciliation
+with per-month deltas, the label regeneration report with attribution,
+the fold arithmetic, and the freeze manifest. State whether Prompt 4 is
+now unblocked.
 ```
 
 ---

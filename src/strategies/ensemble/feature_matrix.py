@@ -72,11 +72,17 @@ FUND_COLS = [
 
 MACRO_COLS = ["vix", "yield_spread_10y2y", "fed_funds_rate", "cpi"]
 
-# All factor columns (quant + fundamental, *excluding* macro for NaN-drop calc)
-FACTOR_COLS = QUANT_COLS + FUND_COLS
+# Sprint 9B R3/R3-A. Never NaN by construction: a ticker-month with no
+# articles falls back to that month's cross-sectional mean via the shrinkage
+# branch, so adding this column can only LOWER a row's NaN fraction and can
+# never change which rows survive the NAN_DROP_THRESHOLD filter below.
+NEWS_COLS = ["news_sentiment"]
+
+# All factor columns (quant + fundamental + news, *excluding* macro for NaN-drop calc)
+FACTOR_COLS = QUANT_COLS + FUND_COLS + NEWS_COLS
 
 # Final output column order
-OUTPUT_COLS = ["date", "ticker"] + QUANT_COLS + FUND_COLS + MACRO_COLS
+OUTPUT_COLS = ["date", "ticker"] + QUANT_COLS + FUND_COLS + NEWS_COLS + MACRO_COLS
 
 # Macro series that get z-scored over a rolling window
 MACRO_ZSCORE_SERIES = {"vix", "cpi"}
@@ -107,6 +113,25 @@ def _load_quant_scores() -> pd.DataFrame:
     df = pd.read_parquet(path)
     df["date"] = pd.to_datetime(df["date"])
     logger.info(f"  Quant scores: {df.shape[0]} rows, {df['ticker'].nunique()} tickers")
+    return df
+
+
+def _load_news_scores(start: Optional[str] = None,
+                      end: Optional[str] = None) -> pd.DataFrame:
+    """Load the monthly news-sentiment factor (Sprint 9B R3/R3-A).
+
+    Computed live from `news_sentiment_scores` rather than read from parquet,
+    so the point-in-time filters and the partial-month drop apply to whatever
+    window the caller asked for. AV-only per REV 2; see factor_export_news.
+    """
+    from src.strategies.ensemble.factor_export_news import load_news_sentiment
+
+    df = load_news_sentiment(start or TIMELINE["train_start"],
+                             end or TIMELINE["test_end"])
+    if df.empty:
+        logger.warning("News scores empty")
+        return pd.DataFrame(columns=["date", "ticker"] + NEWS_COLS)
+    logger.info(f"  News scores: {df.shape[0]} rows, {df['ticker'].nunique()} tickers")
     return df
 
 
@@ -241,9 +266,10 @@ def _merge_all(
     quant: pd.DataFrame,
     fund: pd.DataFrame,
     macro: pd.DataFrame,
+    news: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
-    Merge quant + fundamental + macro on [date, ticker].
+    Merge quant + fundamental + news + macro on [date, ticker].
     Macro is broadcast to all tickers (same value per date).
     """
     # Start with quant as the base (monthly frequency, all tickers)
@@ -253,6 +279,11 @@ def _merge_all(
     if not fund.empty:
         merged = merged.merge(fund, on=["date", "ticker"], how="left")
         logger.info(f"  After quant+fund merge: {merged.shape[0]} rows")
+
+    # Merge news sentiment (Sprint 9B R3/R3-A)
+    if news is not None and not news.empty:
+        merged = merged.merge(news, on=["date", "ticker"], how="left")
+        logger.info(f"  After +news merge: {merged.shape[0]} rows")
 
     # Merge macro (date-level join, same values for all tickers)
     if not macro.empty:
@@ -296,10 +327,11 @@ def build_feature_matrix(
     quant = _load_quant_scores()
     fund = _load_fundamental_scores(end)
     macro = _load_macro(engine)
+    news = _load_news_scores(start, end)
 
     # ── Merge ─────────────────────────────────────────────────────────
-    logger.info("Merging quant + fundamental + macro…")
-    matrix = _merge_all(quant, fund, macro)
+    logger.info("Merging quant + fundamental + news + macro…")
+    matrix = _merge_all(quant, fund, macro, news)
 
     # ── Filter to date range ──────────────────────────────────────────
     matrix = matrix[
@@ -334,7 +366,7 @@ def build_feature_matrix(
     logger.info(f"Final matrix: {n_rows} rows, {n_tickers} tickers, {n_months} months")
 
     if n_rows > 0:
-        nan_pct_per_col = result[QUANT_COLS + FUND_COLS + MACRO_COLS].isna().mean() * 100
+        nan_pct_per_col = result[QUANT_COLS + FUND_COLS + NEWS_COLS + MACRO_COLS].isna().mean() * 100
         logger.info("  NaN % per column:")
         for col, pct in nan_pct_per_col.items():
             status = "⚠" if pct > 30 else "✓"
@@ -384,7 +416,7 @@ def main() -> None:
     print(f"{'═' * 68}")
 
     # NaN summary
-    all_factors = QUANT_COLS + FUND_COLS + MACRO_COLS
+    all_factors = QUANT_COLS + FUND_COLS + NEWS_COLS + MACRO_COLS
     print(f"\n  NaN % per column:")
     for col in all_factors:
         if col in df.columns:
