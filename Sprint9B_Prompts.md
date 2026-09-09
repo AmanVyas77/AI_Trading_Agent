@@ -624,16 +624,52 @@ prompt now does differently from how it was first drafted:
       frame you aggregate from.
   (b) R3-A ADDS CROSS-SECTIONAL STANDARDISATION as the final step.
       See the formula section below.
-  (c) R2 STILL APPLIES — MIRROR GOOG -> GOOGL AT ASSEMBLY. This was
-      dropped from REV 2 by mistake when the file was rewritten for
-      AV-only; R2 was never rescinded. universe.csv contains BOTH
-      tickers, GOOG has 7,163 AV articles since 2022 and GOOGL has
-      ZERO, so without the mirror one ticker in the matrix carries a
-      structurally dead news column for all 56 months. After computing
-      GOOG's monthly aggregate, copy it to GOOGL BEFORE the
-      cross-sectional z-score, so both share classes contribute to and
-      are measured against the same monthly cross-section. Assert
-      afterwards that GOOGL's n, raw and shrunk equal GOOG's exactly.
+  (c) R2 STILL APPLIES — MIRROR GOOG -> GOOGL. This was dropped from
+      REV 2 by mistake when the file was rewritten for AV-only; R2 was
+      never rescinded.
+
+      MEASURED STATE (2026-09-09, verify before changing anything):
+      universe.csv has 54 tickers; the feature matrix has 53 and carries
+      BOTH GOOG and GOOGL at 132 rows each. The missing 54th is CAMT,
+      not GOOG — CAMT is an Israeli 20-F filer with 2,931 price rows,
+      961 news articles and ZERO xbrl_facts, so it fails the >50% NaN
+      threshold. That exclusion is legitimate; do not "fix" it.
+      GOOG carries ~7,107 AV articles since 2022 and GOOGL carries
+      ZERO, so today the same company enters every cross-section with
+      two news values 2.58 SD apart — the largest GOOG/GOOGL divergence
+      of any column in the matrix.
+
+      THE MIRROR: after step 1 computes n and raw per (date, ticker),
+      and BEFORE step 2 computes xsec(m), copy GOOG's n and raw onto
+      GOOGL. Everything downstream then follows: GOOGL's shrinkage
+      weight uses GOOG's n (correct — it is the same evidence), the EWM
+      produces an identical series, and both share classes land on the
+      same news_sentiment.
+
+      ⚠ THIS MEANS ALPHABET COUNTS TWICE IN xsec(m) AND IN THE Z-SCORE
+      MOMENTS, AND THAT IS INTENDED. Ruled by Aman 2026-09-09. It is
+      what the matrix already does for 12 of 12 fundamental columns,
+      including finbert_score and lm_sentiment_score — the two columns
+      news_sentiment is explicitly designed to sit alongside on the same
+      scale. An earlier draft of this instruction argued "one company,
+      one row, one vote" and told you to relabel at the article level
+      instead. That was WRONG on two counts: it assumed GOOG was absent
+      from the matrix (it is not, so relabelling would leave GOOG's 132
+      rows merging to NaN and break the never-NaN property the whole
+      Prompt 3 verification rests on), and it would have made news the
+      only column treating Alphabet differently from the other twelve.
+
+      ASSERT afterwards, month by month: GOOGL's n, raw, shrunk,
+      smoothed and news_sentiment each equal GOOG's EXACTLY.
+
+      ON THE Z-SCORE COHORT: the news panel standardises over
+      universe.csv's 54 while the matrix carries 53. That matches what
+      the QUANT factors already do (CAMT has prices, so it is in
+      _cs_zscore's cohort too) while the fundamentals do 53; the matrix
+      is the intersection. Confirm CAMT is present in
+      quant_factor_scores.parquet and, if so, record this as existing
+      architecture in the results JSON — do NOT change it in this
+      sprint.
 
 Note what AV-only does NOT fix. Density inside the AV era still runs
 2022: 13 -> 2023: 8 -> 2024: 9 -> 2025: 20 -> 2026: 199 median articles
