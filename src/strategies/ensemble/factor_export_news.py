@@ -165,6 +165,43 @@ def _build_panel(start: str, end: str, engine=None) -> pd.DataFrame:
     panel = g.reindex(spine)
     panel["n"] = panel["n"].fillna(0).astype(int)
 
+    # ── 1b. R2 GOOG -> GOOGL mirror (ruled by Aman, 2026-09-09) ───────
+    # Alpha Vantage is fetched for GOOG only (news_pipeline._av_ticker_set
+    # excludes GOOGL), so without this GOOGL would carry zero articles in every
+    # month and ride the shrinkage prior forever.
+    #
+    # The mirror copies n and raw, and it happens HERE — after step 1, before
+    # xsec(m) — so Alphabet contributes TWO rows to the equal-weighted
+    # cross-sectional mean and to the z-score moments. That is intended, not an
+    # oversight: the feature matrix already carries GOOG and GOOGL as two
+    # distinct securities (separate prices, separate quant factors, labels that
+    # disagree in 4 of 131 months), and all 12 fundamental columns — including
+    # finbert_score and lm_sentiment_score, the two columns news_sentiment was
+    # built to sit alongside on the same scale — already give Alphabet two
+    # identical votes. Mirroring at the article level instead would collapse it
+    # to one vote and make news the single column treating Alphabet differently.
+    #
+    # universe.csv and the spine are deliberately untouched: universe.csv is the
+    # canonical guard spine for the Prompt 0 benchmark equality check.
+    _MIRROR_SRC, _MIRROR_DST = "GOOG", "GOOGL"
+    panel = panel.reset_index()
+    _src = panel.loc[panel["ticker"] == _MIRROR_SRC, ["date", "raw", "n"]]
+    if len(_src):
+        _m = panel["ticker"] == _MIRROR_DST
+        _aligned = panel.loc[_m, ["date"]].merge(_src, on="date", how="left")
+        panel.loc[_m, "raw"] = _aligned["raw"].values
+        panel.loc[_m, "n"] = _aligned["n"].values
+        _a = panel.loc[panel["ticker"] == _MIRROR_SRC].set_index("date")[["n", "raw"]]
+        _b = panel.loc[_m].set_index("date")[["n", "raw"]]
+        assert _a["n"].equals(_b["n"]), "GOOG->GOOGL mirror: n diverged"
+        assert _a["raw"].equals(_b["raw"]), "GOOG->GOOGL mirror: raw diverged"
+        logger.info(
+            f"  R2 mirror {_MIRROR_SRC} -> {_MIRROR_DST}: "
+            f"{int(_a['n'].sum()):,} articles copied across "
+            f"{int((_a['n'] > 0).sum())} months"
+        )
+    panel = panel.set_index(["date", "ticker"])
+
     # ── 2. xsec(m): EQUAL weight per ticker, tickers with n >= 1 only ─
     covered = panel[panel["n"] >= 1]
     xsec = covered.groupby("date")["raw"].mean()
