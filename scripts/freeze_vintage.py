@@ -47,6 +47,11 @@ FROZEN_INPUTS = [
     "data/quant_research.db",
     "data/processed/ensemble_feature_matrix.parquet",
     "data/processed/holdout_scores.parquet",
+    # Added 2026-09-09 (Prompt 3b). The labeled dataset is THE DEPENDENT
+    # VARIABLE and was previously in no vintage at all; the news parquet is the
+    # Sprint 9B feature under test. Freezing the DB alone did not pin either.
+    "data/processed/ensemble_labeled.parquet",
+    "data/processed/news_sentiment_scores.parquet",
 ]
 
 # Recorded (hash asserted) but NOT copied — immutable by convention / git-tracked.

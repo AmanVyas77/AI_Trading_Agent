@@ -37,7 +37,9 @@ benchmarks:
   # Benchmark series stored in the `prices` table alongside the 54 candidates.
   # These are NOT universe members. Anything deriving a ticker list from
   # `prices` must subtract this set — see src/utils/benchmarks.py.
-  tickers: ["SPY"]
+  # XLK added 2026-09-09 (Prompt 3b): it makes the LABELS (target_builder
+  # BENCHMARK), so it must be frozen in `prices` rather than fetched at run time.
+  tickers: ["SPY", "XLK"]
 
 # ── Data Sources ─────────────────────────────────────────────
 data:

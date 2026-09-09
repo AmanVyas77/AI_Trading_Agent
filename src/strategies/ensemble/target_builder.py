@@ -35,7 +35,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import yaml
-import yfinance as yf
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text, inspect
 
@@ -54,7 +53,10 @@ PROCESSED.mkdir(parents=True, exist_ok=True)
 
 BENCHMARK = "XLK"
 MIN_TRAIN_MONTHS = 36
-XLK_CACHE_PATH = ROOT / "data" / "raw" / "xlk_monthly.csv"
+# Retired 2026-09-09 (Prompt 3b): XLK now comes from the frozen `prices`
+# table, not this gitignored cache. Kept only so a stale cache on disk is
+# recognisable as dead, never read.
+_RETIRED_XLK_CACHE_PATH = ROOT / "data" / "raw" / "xlk_monthly.csv"
 
 
 # ── DB helper ─────────────────────────────────────────────────────────────────
@@ -68,7 +70,8 @@ def _get_engine(engine=None):
 
 # ── 1. Load universe prices ──────────────────────────────────────────────────
 
-def _load_monthly_prices(engine) -> pd.DataFrame:
+def _load_monthly_prices(engine, start: Optional[str] = None,
+                         end: Optional[str] = None) -> pd.DataFrame:
     """
     Load adj_close from SQLite, pivot to wide (date × ticker),
     resample to month-end.
@@ -84,9 +87,14 @@ def _load_monthly_prices(engine) -> pd.DataFrame:
         ORDER BY date
     """
     with engine.connect() as conn:
+        # start/end default to the settings.yaml timeline, so calling with no
+        # arguments stays bit-identical to the pre-Prompt-3b behaviour.
+        # TIMELINE["test_end"] itself is NOT mutated — it is read by the live
+        # matrix build and changing it would ripple into the production path.
         df = pd.read_sql_query(
             text(sql), conn,
-            params={"start": TIMELINE["train_start"], "end": TIMELINE["test_end"]},
+            params={"start": start or TIMELINE["train_start"],
+                    "end": end or TIMELINE["test_end"]},
         )
 
     if df.empty:
@@ -108,48 +116,43 @@ def _load_monthly_prices(engine) -> pd.DataFrame:
 
 # ── 2. Load / download XLK benchmark ─────────────────────────────────────────
 
-def _load_xlk_monthly(monthly_dates: pd.DatetimeIndex) -> pd.Series:
-    """
-    Get XLK monthly adj_close aligned to the same month-end dates.
-    Uses yfinance with local CSV cache.
-    """
-    # Try cache first
-    if XLK_CACHE_PATH.exists():
-        cached = pd.read_csv(XLK_CACHE_PATH, parse_dates=["date"], index_col="date")
-        if "adj_close" in cached.columns:
-            cached_monthly = cached["adj_close"].resample("ME").last()
-            # Check if cache covers our date range
-            if (cached_monthly.index.min() <= monthly_dates.min()
-                    and cached_monthly.index.max() >= monthly_dates.max()):
-                logger.info(f"  XLK loaded from cache: {XLK_CACHE_PATH}")
-                return cached_monthly.reindex(monthly_dates).rename(BENCHMARK)
+def _load_xlk_monthly(
+    monthly_dates: pd.DatetimeIndex,
+    engine=None,
+    allow_download: bool = False,
+) -> pd.Series:
+    """XLK month-end adj_close, served from the frozen `prices` table.
 
-    # Download via yfinance
-    logger.info(f"  Downloading {BENCHMARK} via yfinance…")
-    raw = yf.download(
-        BENCHMARK,
-        start=TIMELINE["train_start"],
-        end="2025-01-15",  # small buffer past test_end
-        auto_adjust=True,
-        progress=False,
+    Why this changed (Prompt 3b, 2026-09-09)
+    ----------------------------------------
+    This function used to fetch XLK from yfinance with ``end="2025-01-15"``
+    hard-coded and cache it to ``data/raw/xlk_monthly.csv`` — a file that is
+    gitignored and appears in no frozen vintage. Since ``label = 1 if a
+    ticker's forward return beats XLK's``, that put THE DEPENDENT VARIABLE of
+    the project on an unfrozen network fetch: re-running old code could
+    silently produce different labels. XLK now lives in `prices`, ingested
+    through the same path as the 54 candidates, and is covered by
+    scripts/freeze_vintage.py.
+
+    ``allow_download`` defaults to False, so a missing benchmark raises
+    instead of quietly reaching for the network. Passing True routes through
+    quant_pipeline.load_benchmark, which downloads only behind a loud logged
+    warning naming the fallback.
+    """
+    from src.data.quant_pipeline import load_benchmark
+
+    start = monthly_dates.min().to_period("M").to_timestamp().strftime("%Y-%m-%d")
+    end = monthly_dates.max().strftime("%Y-%m-%d")
+
+    daily = load_benchmark(start, end, ticker=BENCHMARK, engine=engine,
+                           allow_download=allow_download)
+    monthly = daily.resample("ME").last()
+    covered = monthly.reindex(monthly_dates).notna().sum()
+    logger.info(
+        f"  {BENCHMARK} from `prices`: {len(daily)} daily rows → "
+        f"{covered}/{len(monthly_dates)} month-ends covered"
     )
-
-    if raw.empty:
-        logger.error("yfinance returned empty data for XLK")
-        return pd.Series(dtype=float, name=BENCHMARK)
-
-    if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.get_level_values(0)
-
-    # Save cache
-    XLK_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    cache_df = pd.DataFrame({"date": raw.index, "adj_close": raw["Close"].values})
-    cache_df.to_csv(XLK_CACHE_PATH, index=False)
-    logger.info(f"  Cached XLK → {XLK_CACHE_PATH}")
-
-    # Resample to month-end
-    xlk_monthly = raw["Close"].resample("ME").last()
-    return xlk_monthly.reindex(monthly_dates).rename(BENCHMARK)
+    return monthly.reindex(monthly_dates).rename(BENCHMARK)
 
 
 # ── 3. Compute forward returns ───────────────────────────────────────────────
@@ -207,7 +210,8 @@ def _build_labels(
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def build_labeled_dataset(engine=None) -> pd.DataFrame:
+def build_labeled_dataset(engine=None, start: Optional[str] = None,
+                          end: Optional[str] = None) -> pd.DataFrame:
     """
     Build the labeled dataset for the ensemble ML combiner.
 
@@ -240,7 +244,7 @@ def build_labeled_dataset(engine=None) -> pd.DataFrame:
 
     # ── Load monthly prices ───────────────────────────────────────────
     logger.info("Loading monthly prices from DB…")
-    monthly_prices = _load_monthly_prices(engine)
+    monthly_prices = _load_monthly_prices(engine, start=start, end=end)
     if monthly_prices.empty:
         logger.error("No price data available")
         return pd.DataFrame()
@@ -367,7 +371,17 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    df = build_labeled_dataset()
+    import argparse
+    ap = argparse.ArgumentParser(description="Build the ensemble labeled dataset")
+    ap.add_argument("--start", default=None,
+                    help="price window start (default: timeline.train_start)")
+    ap.add_argument("--end", default=None,
+                    help="price window end (default: timeline.test_end). "
+                         "Prompt 3b: pass 2026-08-31 for the pre-registered "
+                         "Sprint 9B span; TIMELINE is deliberately NOT mutated.")
+    args = ap.parse_args()
+
+    df = build_labeled_dataset(start=args.start, end=args.end)
 
     if df.empty:
         logger.warning("Empty result — parquet NOT saved")

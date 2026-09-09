@@ -1,0 +1,163 @@
+{
+  "sprint": "9B",
+  "generated_utc": "2026-09-09T04:04:16.221471+00:00",
+  "git_head_at_write": "aab16e8f2b31ffa95631fe71c07e5ffeb40c202d",
+  "window": {
+    "start": "2022-01-01",
+    "end": "2026-08-31",
+    "source": "REV 2 \u2014 both arms committed to this span before Prompt 3b ran"
+  },
+  "benchmarks": {
+    "tickers_in_prices": [
+      "SPY",
+      "XLK"
+    ],
+    "universe_size": 54,
+    "note": "SPY (Prompt 0) and XLK (Prompt 3b) live in `prices` but are NOT universe members. XLK makes the LABELS via target_builder.BENCHMARK; before 3b it was fetched from yfinance with end='2025-01-15' hard-coded and cached to a gitignored file present in no vintage."
+  },
+  "labels": {
+    "path": "data/processed/ensemble_labeled.parquet",
+    "full_span": {
+      "months": 137,
+      "rows": 7033,
+      "min": "2015-03-31",
+      "max": "2026-07-31"
+    },
+    "sprint_window": {
+      "months": 55,
+      "rows": 2915,
+      "min": "2022-01-31",
+      "max": "2026-07-31",
+      "label_balance_pct_class1": 48.47
+    },
+    "xlk_source": "prices table (frozen); allow_download=False by default"
+  },
+  "folds": {
+    "MIN_TRAIN_MONTHS": 36,
+    "PURGE_MONTHS": 3,
+    "EVAL_MONTHS": 6,
+    "requirement": "55 > 36 + 3 = 39",
+    "satisfied": true,
+    "n_folds": 16
+  },
+  "ruling_training_over_the_spent_holdout": {
+    "ruled_by": "Aman",
+    "ruled_on": "2026-09-09",
+    "status": "ACCEPTABLE",
+    "what_it_means": "Extending labels to 2026-08-31 means both arms TRAIN on 2025-01 -> 2026-06, which is the Sprint 7 holdout.",
+    "why_it_is_not_a_broken_rule": "A spent holdout bars re-EVALUATING on that window; it does not bar training on it. Sprint 9B is judged on a forward window (2026-09-30 -> 2028-09-30) that sits strictly after 2026-06-30, so there is no leakage into what will actually be measured, and nothing is lost that was not already spent.",
+    "reader_warning": "Do NOT mistake this for a rule violation. It is a recorded, dated ruling made BEFORE any Sprint 9B performance statistic was computed."
+  },
+  "attribution_of_label_changes": {
+    "xlk_source_swap_db_vs_cache": {
+      "labels_changed": 0,
+      "rows_compared": 5973,
+      "note": "window held fixed at the default; zero flips"
+    },
+    "window_extension": {
+      "labels_changed_in_overlap": 0,
+      "months_added": 20,
+      "rows_added": 1060,
+      "note": "purely additive"
+    },
+    "vs_2026_08_03_artifact": {
+      "labels_differing": 0,
+      "rows_compared": 5973
+    }
+  },
+  "corpus_vintages_at_write": {
+    "price_vintage_2025_2026H1": {
+      "sha256": "9b09f7a04291579ae1425cfcb441819309e14db956321fb0c67cedf202833d0d",
+      "n_rows": 20888,
+      "n_tickers": 56,
+      "date_min": "2025-01-02",
+      "date_max": "2026-06-30",
+      "window": [
+        "2025-01-01",
+        "2026-06-30"
+      ],
+      "table": "prices"
+    },
+    "news_vintage": {
+      "sha256": "114461e8e12ea76d6a6ab3553772217c9147e2ad9d7c8dcc0788f6a0e3f23617",
+      "n_rows": 442740,
+      "n_sources": 2,
+      "n_tickers": 54,
+      "published_min": "2015-01-01 00:00:00",
+      "published_max": "2026-09-07 17:58:39",
+      "source_year_counts": [
+        [
+          "alphavantage",
+          "2022",
+          10677
+        ],
+        [
+          "alphavantage",
+          "2023",
+          7372
+        ],
+        [
+          "alphavantage",
+          "2024",
+          9045
+        ],
+        [
+          "alphavantage",
+          "2025",
+          61748
+        ],
+        [
+          "alphavantage",
+          "2026",
+          189977
+        ],
+        [
+          "fnspid",
+          "2015",
+          7980
+        ],
+        [
+          "fnspid",
+          "2016",
+          10563
+        ],
+        [
+          "fnspid",
+          "2017",
+          14794
+        ],
+        [
+          "fnspid",
+          "2018",
+          19876
+        ],
+        [
+          "fnspid",
+          "2019",
+          23495
+        ],
+        [
+          "fnspid",
+          "2020",
+          16370
+        ],
+        [
+          "fnspid",
+          "2021",
+          9189
+        ],
+        [
+          "fnspid",
+          "2022",
+          21161
+        ],
+        [
+          "fnspid",
+          "2023",
+          40493
+        ]
+      ],
+      "table": "news_articles"
+    }
+  }
+}
