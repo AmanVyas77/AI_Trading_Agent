@@ -1,0 +1,98 @@
+{
+  "created_utc": "2026-09-09T20:25:45.667102+00:00",
+  "purpose": "Frozen data vintage for the Markov exit-layer diagnostic (Prompts 2-4). The AV backfill retroactively revises historical rows nightly; this snapshot makes those prompts mutually comparable.",
+  "git_head": "e7fbff91de3f77eeadb330f1376555f8e1e8e197",
+  "git_branch": "main",
+  "git_dirty": false,
+  "interpreter": {
+    "sys_executable": "/Users/aman/dev/Ai Trading Agent/.venv/bin/python",
+    "python_version": "3.11.7 (main, Dec 15 2023, 12:09:56) [Clang 14.0.6 ]",
+    "numpy": "2.4.4",
+    "sklearn": "1.8.0",
+    "pandas": "2.3.3"
+  },
+  "window": [
+    "2025-01-01",
+    "2026-06-30"
+  ],
+  "frozen": {
+    "quant_research.db": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/quant_research.db",
+      "size_bytes": 971452416,
+      "sha256": "359fa9bc2a465f8edc55a2c5cc21cdf39f45ba27d27e14cdfdf60dffd07cd0d6",
+      "mtime_utc": "2026-09-09T04:05:50.002762+00:00",
+      "snapshot_relpath": "quant_research.db",
+      "source_relpath": "data/quant_research.db",
+      "verified_after_copy": true
+    },
+    "ensemble_feature_matrix.parquet": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/processed/ensemble_feature_matrix.parquet",
+      "size_bytes": 738972,
+      "sha256": "c1080ecf5bce560f56775aab7fd11beb49e7df78d73374d2c756159b2aba9b82",
+      "mtime_utc": "2026-09-09T20:07:27.018173+00:00",
+      "snapshot_relpath": "ensemble_feature_matrix.parquet",
+      "source_relpath": "data/processed/ensemble_feature_matrix.parquet",
+      "verified_after_copy": true
+    },
+    "holdout_scores.parquet": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/processed/holdout_scores.parquet",
+      "size_bytes": 2813,
+      "sha256": "5739e0ad9baf7d3d6bc30f9004ccc2229bd9fc1ecc4668e6e289c54f136297ce",
+      "mtime_utc": "2026-09-09T03:39:56.964285+00:00",
+      "snapshot_relpath": "holdout_scores.parquet",
+      "source_relpath": "data/processed/holdout_scores.parquet",
+      "verified_after_copy": true
+    },
+    "ensemble_labeled.parquet": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/processed/ensemble_labeled.parquet",
+      "size_bytes": 805591,
+      "sha256": "7e7c8d38d36b86e23701ef0aedbe8effbd747577c9e28e98c87f1c38583c36f2",
+      "mtime_utc": "2026-09-09T04:03:17.434268+00:00",
+      "snapshot_relpath": "ensemble_labeled.parquet",
+      "source_relpath": "data/processed/ensemble_labeled.parquet",
+      "verified_after_copy": true
+    },
+    "news_sentiment_scores.parquet": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/data/processed/news_sentiment_scores.parquet",
+      "size_bytes": 123531,
+      "sha256": "ea173b33a664809ee7dbc55e227a3535e04de3da89f34efeba9b18a33f05d34f",
+      "mtime_utc": "2026-09-09T20:06:04.202876+00:00",
+      "snapshot_relpath": "news_sentiment_scores.parquet",
+      "source_relpath": "data/processed/news_sentiment_scores.parquet",
+      "verified_after_copy": true
+    }
+  },
+  "referenced": {
+    "ensemble_models.pkl": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/models/ensemble_models.pkl",
+      "size_bytes": 4120378,
+      "sha256": "fbad5015b6d9099eaf909f5036324a24b9b81dffabef79d83cce8517a1ad61af",
+      "mtime_utc": "2026-08-04T00:04:52.799823+00:00",
+      "source_relpath": "models/ensemble_models.pkl",
+      "copied": false,
+      "md5": "296e589f4da205eb1d171c2121d90f82",
+      "md5_expected": "296e589f4da205eb1d171c2121d90f82"
+    },
+    "settings.yaml": {
+      "source_abspath": "/Users/aman/dev/Ai Trading Agent/config/settings.yaml",
+      "size_bytes": 7296,
+      "sha256": "3992fa2233aa778a304a451698aa6ac46d8815bf085c09541e3a6f313506f136",
+      "mtime_utc": "2026-09-09T03:59:13.837938+00:00",
+      "source_relpath": "config/settings.yaml",
+      "copied": false
+    }
+  },
+  "price_vintage": {
+    "sha256": "9b09f7a04291579ae1425cfcb441819309e14db956321fb0c67cedf202833d0d",
+    "n_rows": 20888,
+    "n_tickers": 56,
+    "date_min": "2025-01-02",
+    "date_max": "2026-06-30",
+    "window": [
+      "2025-01-01",
+      "2026-06-30"
+    ],
+    "table": "prices"
+  },
+  "price_vintage_matches_source_at_freeze_time": true
+}
